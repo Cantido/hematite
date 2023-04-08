@@ -8,7 +8,6 @@ pub mod db {
 
     pub struct Database {
         file: File,
-        rownum: u64,
         primary_index: BTreeMap<u64, u64>,
     }
 
@@ -18,7 +17,6 @@ pub mod db {
 
             Ok(Database {
                 file: file,
-                rownum: 0,
                 primary_index: BTreeMap::new(),
             })
         }
@@ -42,11 +40,18 @@ pub mod db {
             let encoded = encode_row(&event)?;
             self.file.write_all(&encoded)?;
 
-            self.primary_index.insert(self.rownum, position);
+            match self.primary_index.last_key_value() {
+              None => {
+                self.primary_index.insert(0, 0);
+                Ok(())
+              }
 
-            self.rownum += 1;
+              Some((last_rownum, _offset)) => {
+                self.primary_index.insert(last_rownum + 1, position);
+                Ok(())
+              }
+            }
 
-            Ok(())
         }
 
     }
@@ -59,3 +64,4 @@ pub mod db {
         Ok(row)
     }
 }
+
