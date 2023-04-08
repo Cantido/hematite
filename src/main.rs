@@ -1,14 +1,10 @@
-use std::{fs::File, collections::BTreeMap};
-
-use hematite::db;
+use hematite::db::Database;
+use std::path::PathBuf;
 
 fn main() -> std::io::Result<()> {
-    std::fs::remove_file("stream.db")?;
-    let mut file = File::options().append(true).create(true).open("stream.db")?;
-    let mut row_count = 0;
-    let mut primary_index = BTreeMap::new();
+    let _ = std::fs::remove_file("stream.db");
+    let mut db = Database::new(&PathBuf::from("stream.db"))?;
     let event = b"Hello, world!";
 
-
-    db::insert(&mut file, &mut row_count, &mut primary_index, event)
+    db.insert(event)
 }
