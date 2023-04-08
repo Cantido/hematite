@@ -123,6 +123,42 @@ pub mod db {
 
           assert_eq!(result.id(), event.id());
         }
+
+        #[test]
+        fn read_nonexistent() {
+          let test_file = TestFile::new("readnonexistent.db");
+          let _ = test_file.delete();
+
+          let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+
+          let result = db.query(0);
+
+          assert!(result.is_none());
+        }
+
+        #[test]
+        fn can_write_and_read_many() {
+          let test_file = TestFile::new("writereadmanytest.db");
+          let _ = test_file.delete();
+
+          let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+
+          let event = Event::default();
+
+          for _n in 0..100 {
+            db.insert(&Event::default()).expect("Could not write to the DB");
+          }
+
+          db.insert(&event).expect("Could not write to the DB");
+
+          for _n in 0..100 {
+            db.insert(&Event::default()).expect("Could not write to the DB");
+          }
+
+          let result: Event = db.query(100).expect("Row not found").expect("Failed to read row");
+
+          assert_eq!(result.id(), event.id());
+        }
     }
 }
 
