@@ -1,10 +1,10 @@
 use hematite::db::Database;
 use std::path::PathBuf;
+use cloudevents::event::Event;
 
 fn main() -> std::io::Result<()> {
     let _ = std::fs::remove_file("stream.db");
     let mut db = Database::new(&PathBuf::from("stream.db"))?;
-    let event = b"Hello, world!";
 
-    db.insert(event)
+    db.insert(&Event::default())
 }
