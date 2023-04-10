@@ -1,11 +1,19 @@
 pub mod db {
     use base64::{engine::general_purpose, Engine as _};
+    use cloudevents::event::Event;
     use std::collections::BTreeMap;
     use std::fs::File;
     use std::io::prelude::*;
     use std::io::{self, BufRead};
     use std::path::PathBuf;
-    use cloudevents::event::Event;
+    use anyhow::Result;
+
+    pub enum ExpectedRevision {
+        Any,
+        NoStream,
+        StreamExists,
+        Exact(u64),
+    }
 
     pub struct Database {
         file: File,
@@ -13,8 +21,12 @@ pub mod db {
     }
 
     impl Database {
-        pub fn new(path: &PathBuf) -> std::io::Result<Self> {
-            let file = File::options().read(true).append(true).create(true).open(path)?;
+        pub fn new(path: &PathBuf) -> Result<Self> {
+            let file = File::options()
+                .read(true)
+                .append(true)
+                .create(true)
+                .open(path)?;
 
             Ok(Database {
                 file: file,
@@ -22,42 +34,67 @@ pub mod db {
             })
         }
 
-        pub fn query(
-            &mut self,
-            rownum: u64,
-        ) -> Option<std::io::Result<Event>> {
-            let row_offset = self.primary_index.get(&rownum)?;
-            let _position = self.file
+        pub fn query(&mut self, rownum: u64) -> Result<Option<Event>> {
+            let row_offset = match self.primary_index.get(&rownum) {
+              Some(row_offset) => row_offset,
+              None => return Ok(None)
+            };
+            let _position = self
+                .file
                 .seek(io::SeekFrom::Start(*row_offset))
                 .expect("Cannot seek to rownum's row");
-            io::BufReader::new(&self.file).lines().next().map(|r| r.map(decode_event))
+
+              io::BufReader::new(&self.file)
+                  .lines()
+                  .next()
+                  .transpose()
+                  .map(|r| r.map(decode_event))
+                  .map_err(|e| e.into())
         }
 
         pub fn insert(
             &mut self,
             event: &Event,
-        ) -> std::io::Result<()> {
+            expected_revision: ExpectedRevision,
+        ) -> Result<()> {
+            let revision_match: bool = match expected_revision {
+                ExpectedRevision::Any => true,
+                ExpectedRevision::NoStream => self.primary_index.last_key_value().is_none(),
+                ExpectedRevision::StreamExists => self.primary_index.last_key_value().is_some(),
+                ExpectedRevision::Exact(revision) => self
+                    .primary_index
+                    .last_key_value()
+                    .map(|t| t.0)
+                    .map_or(false, |r| r == &revision),
+            };
+
+            if revision_match {
+                self.write_event(&event)
+            } else {
+                panic!("revision mismatch");
+            }
+        }
+
+        fn write_event(&mut self, event: &Event) -> Result<()> {
             let position = self.file.seek(io::SeekFrom::End(0))?;
             let encoded = encode_event(&event)?;
             self.file.write_all(&encoded)?;
 
             match self.primary_index.last_key_value() {
-              None => {
-                self.primary_index.insert(0, 0);
-                Ok(())
-              }
+                None => {
+                    self.primary_index.insert(0, 0);
+                    Ok(())
+                }
 
-              Some((last_rownum, _offset)) => {
-                self.primary_index.insert(last_rownum + 1, position);
-                Ok(())
-              }
+                Some((last_rownum, _offset)) => {
+                    self.primary_index.insert(last_rownum + 1, position);
+                    Ok(())
+                }
             }
-
         }
-
     }
 
-    fn encode_event(event: &Event) -> std::io::Result<Vec<u8>> {
+    fn encode_event(event: &Event) -> Result<Vec<u8>> {
         let json = serde_json::to_string(&event)?;
         let encoded: String = general_purpose::STANDARD_NO_PAD.encode(json);
 
@@ -67,98 +104,109 @@ pub mod db {
     }
 
     fn decode_event(row: String) -> Event {
-      let trimmed_b64 = row.trim_end();
-      let json_bytes = general_purpose::STANDARD_NO_PAD.decode(trimmed_b64).expect("Expected row to be decodable from base64");
-      let json = String::from_utf8(json_bytes).expect("Expected row to be valid UTF8");
+        let trimmed_b64 = row.trim_end();
+        let json_bytes = general_purpose::STANDARD_NO_PAD
+            .decode(trimmed_b64)
+            .expect("Expected row to be decodable from base64");
+        let json = String::from_utf8(json_bytes).expect("Expected row to be valid UTF8");
 
-      let event: Event = serde_json::from_str(&json).expect("Expected row to be deserializable to json");
-      event
+        let event: Event =
+            serde_json::from_str(&json).expect("Expected row to be deserializable to json");
+        event
     }
 
     #[cfg(test)]
     mod tests {
-        use std::path::PathBuf;
-        use cloudevents::*;
         use cloudevents::event::Event;
+        use cloudevents::*;
+        use std::path::PathBuf;
+
+        use crate::db::ExpectedRevision;
 
         use super::Database;
 
         struct TestFile(PathBuf);
 
         impl TestFile {
-          pub fn new(filename: &str) -> Self {
-            let mut tmp = std::env::temp_dir();
-            tmp.push(filename);
-            Self(tmp)
-          }
+            pub fn new(filename: &str) -> Self {
+                let mut tmp = std::env::temp_dir();
+                tmp.push(filename);
+                Self(tmp)
+            }
 
-          pub fn path(&self) -> &PathBuf {
-            &self.0
-          }
+            pub fn path(&self) -> &PathBuf {
+                &self.0
+            }
 
-          pub fn delete(&self) -> std::io::Result<()> {
-            std::fs::remove_file(&self.0)
-          }
+            pub fn delete(&self) -> std::io::Result<()> {
+                std::fs::remove_file(&self.0)
+            }
         }
 
         impl Drop for TestFile {
-          fn drop(&mut self) {
-            let _ = self.delete();
-          }
+            fn drop(&mut self) {
+                let _ = self.delete();
+            }
         }
-
 
         #[test]
         fn can_write_and_read() {
-          let test_file = TestFile::new("writereadtest.db");
-          let _ = test_file.delete();
+            let test_file = TestFile::new("writereadtest.db");
+            let _ = test_file.delete();
 
-          let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+            let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
 
-          let event = Event::default();
+            let event = Event::default();
 
-          db.insert(&event).expect("Could not write to the DB");
+            db.insert(&event, ExpectedRevision::Any).expect("Could not write to the DB");
 
-          let result: Event = db.query(0).expect("Row not found").expect("Failed to read row");
+            let result: Event = db
+                .query(0)
+                .expect("Row not found")
+                .expect("Failed to read row");
 
-          assert_eq!(result.id(), event.id());
+            assert_eq!(result.id(), event.id());
         }
 
         #[test]
         fn read_nonexistent() {
-          let test_file = TestFile::new("readnonexistent.db");
-          let _ = test_file.delete();
+            let test_file = TestFile::new("readnonexistent.db");
+            let _ = test_file.delete();
 
-          let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+            let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
 
-          let result = db.query(0);
+            let result = db.query(0).expect("Expected success reading empty db");
 
-          assert!(result.is_none());
+            assert!(result.is_none());
         }
 
         #[test]
         fn can_write_and_read_many() {
-          let test_file = TestFile::new("writereadmanytest.db");
-          let _ = test_file.delete();
+            let test_file = TestFile::new("writereadmanytest.db");
+            let _ = test_file.delete();
 
-          let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+            let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
 
-          let event = Event::default();
+            let event = Event::default();
 
-          for _n in 0..100 {
-            db.insert(&Event::default()).expect("Could not write to the DB");
-          }
+            for _n in 0..100 {
+                db.insert(&Event::default(), ExpectedRevision::Any)
+                    .expect("Could not write to the DB");
+            }
 
-          db.insert(&event).expect("Could not write to the DB");
+            db.insert(&event, ExpectedRevision::Any).expect("Could not write to the DB");
 
-          for _n in 0..100 {
-            db.insert(&Event::default()).expect("Could not write to the DB");
-          }
+            for _n in 0..100 {
+                db.insert(&Event::default(), ExpectedRevision::Any)
+                    .expect("Could not write to the DB");
+            }
 
-          let result: Event = db.query(100).expect("Row not found").expect("Failed to read row");
+            let result: Event = db
+                .query(100)
+                .expect("Row not found")
+                .expect("Failed to read row");
 
-          assert_eq!(result.id(), event.id());
+            assert_eq!(result.id(), event.id());
         }
     }
 }
-

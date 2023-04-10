@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use rand::prelude::*;
 use cloudevents::event::Event;
 
-use hematite::db::Database;
+use hematite::db::{Database, ExpectedRevision};
 
 fn write_bench(c: &mut Criterion) {
     let _ = std::fs::remove_file("stream.db");
@@ -12,7 +12,7 @@ fn write_bench(c: &mut Criterion) {
 
     for _n in 1..100_000 {
       let event = Event::default();
-      db.insert(black_box(&event)).expect("Could not insert value into DB");
+      db.insert(black_box(&event), ExpectedRevision::Any).expect("Could not insert value into DB");
     }
 
     let mut rng = thread_rng();
