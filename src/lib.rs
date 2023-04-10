@@ -6,7 +6,7 @@ pub mod db {
     use std::io::prelude::*;
     use std::io::{self, BufRead};
     use std::path::PathBuf;
-    use anyhow::Result;
+    use anyhow::{Result, bail};
 
     pub enum ExpectedRevision {
         Any,
@@ -71,7 +71,7 @@ pub mod db {
             if revision_match {
                 self.write_event(&event)
             } else {
-                panic!("revision mismatch");
+                bail!("revision mismatch");
             }
         }
 
@@ -178,6 +178,68 @@ pub mod db {
             let result = db.query(0).expect("Expected success reading empty db");
 
             assert!(result.is_none());
+        }
+
+        #[test]
+        fn can_write_expecting_no_stream_in_empty_db() {
+            let test_file = TestFile::new("nostreamemptydb.db");
+            let _ = test_file.delete();
+
+            let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+
+            let event = Event::default();
+
+            db.insert(&event, ExpectedRevision::NoStream).expect("Could not write to the DB");
+        }
+
+        #[test]
+        fn cannot_write_expecting_no_stream_in_non_empty_db() {
+            let test_file = TestFile::new("nonemptydbexpectingnostream.db");
+            let _ = test_file.delete();
+
+            let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+
+            let event1 = Event::default();
+            let event2 = Event::default();
+            db.insert(&event1, ExpectedRevision::NoStream).expect("Could not write to the DB");
+            assert!(db.insert(&event2, ExpectedRevision::NoStream).is_err());
+        }
+
+        #[test]
+        fn cannot_write_to_empty_db_expecting_stream_exists() {
+            let test_file = TestFile::new("emptyexpectexists.db");
+            let _ = test_file.delete();
+
+            let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+
+            let event = Event::default();
+
+            assert!(db.insert(&event, ExpectedRevision::StreamExists).is_err());
+        }
+
+        #[test]
+        fn cannot_write_expecting_revision_zero_with_empty_db() {
+            let test_file = TestFile::new("expectrevisionzerofailure.db");
+            let _ = test_file.delete();
+
+            let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+
+            let event = Event::default();
+
+            assert!(db.insert(&event, ExpectedRevision::Exact(0)).is_err());
+        }
+
+        #[test]
+        fn can_write_expecting_revision_zero_with_present_row() {
+            let test_file = TestFile::new("expectrevisionzerofailure.db");
+            let _ = test_file.delete();
+
+            let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+
+            let event1 = Event::default();
+            let event2 = Event::default();
+            db.insert(&event1, ExpectedRevision::NoStream).expect("Could not write to the DB");
+            db.insert(&event2, ExpectedRevision::Exact(0)).expect("Could not write to the DB");
         }
 
         #[test]
