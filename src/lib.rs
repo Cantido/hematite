@@ -1,5 +1,6 @@
 pub mod db {
     use base64::{engine::general_purpose, Engine as _};
+    use cloudevents::*;
     use cloudevents::event::Event;
     use std::collections::BTreeMap;
     use std::fs::File;
@@ -18,6 +19,7 @@ pub mod db {
     pub struct Database {
         file: File,
         primary_index: BTreeMap<u64, u64>,
+        source_id_index: BTreeMap<(String, String), u64>
     }
 
     impl Database {
@@ -31,6 +33,7 @@ pub mod db {
             Ok(Database {
                 file: file,
                 primary_index: BTreeMap::new(),
+                source_id_index: BTreeMap::new()
             })
         }
 
@@ -76,21 +79,28 @@ pub mod db {
         }
 
         fn write_event(&mut self, event: &Event) -> Result<()> {
+            if self.source_id_index.contains_key(&(event.source().to_string(), event.id().to_string())) {
+              bail!("Event with that source and ID value already exists in this stream");
+            }
+
             let position = self.file.seek(io::SeekFrom::End(0))?;
             let encoded = encode_event(&event)?;
             self.file.write_all(&encoded)?;
 
-            match self.primary_index.last_key_value() {
-                None => {
-                    self.primary_index.insert(0, 0);
-                    Ok(())
-                }
+            let (event_rownum, event_offset) =
+              match self.primary_index.last_key_value() {
+                  None => {
+                      (0, 0)
+                  }
+                  Some((last_rownum, _offset)) => {
+                      (last_rownum + 1, position)
+                  }
+              };
 
-                Some((last_rownum, _offset)) => {
-                    self.primary_index.insert(last_rownum + 1, position);
-                    Ok(())
-                }
-            }
+            self.primary_index.insert(event_rownum, event_offset);
+            self.source_id_index.insert((event.source().to_string(), event.id().to_string()), event_rownum);
+
+            Ok(())
         }
     }
 
@@ -166,6 +176,19 @@ pub mod db {
                 .expect("Failed to read row");
 
             assert_eq!(result.id(), event.id());
+        }
+
+        #[test]
+        fn cannot_write_duplicate_event() {
+            let test_file = TestFile::new("writereadtest.db");
+            let _ = test_file.delete();
+
+            let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+
+            let event = Event::default();
+
+            db.insert(&event, ExpectedRevision::Any).expect("Could not write to the DB");
+            assert!(db.insert(&event, ExpectedRevision::Any).is_err());
         }
 
         #[test]
