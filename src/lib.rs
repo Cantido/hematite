@@ -9,6 +9,10 @@ pub mod db {
     use std::path::PathBuf;
     use anyhow::{Result, bail};
 
+
+    type RowId = u64;
+    type FileOffset = u64;
+
     pub enum Filter<'a> {
       Exact(HashMap<&'a str, &'a str>),
       Prefix(HashMap<&'a str, &'a str>),
@@ -23,13 +27,21 @@ pub mod db {
         Any,
         NoStream,
         StreamExists,
-        Exact(u64),
+        Exact(RowId),
     }
 
     pub struct Database {
         file: File,
-        primary_index: BTreeMap<u64, u64>,
-        source_id_index: BTreeMap<(String, String), u64>
+        primary_index: BTreeMap<RowId, FileOffset>,
+        source_id_index: BTreeMap<(String, String), RowId>
+    }
+
+    struct QueryPlan {
+      operations: Vec<Operations>
+    }
+
+    enum Operations {
+      TableAccessIndexRownum(RowId)
     }
 
     impl Database {
@@ -48,11 +60,43 @@ pub mod db {
         }
 
         pub fn query(&mut self, filter: &Filter) -> Result<Vec<Event>> {
-            let rows = match filter {
+            let query_plan = self.plan_query(&filter);
+
+            let mut results = Vec::<Event>::new();
+
+            for operation in query_plan.operations {
+              match operation {
+                Operations::TableAccessIndexRownum(rownum) => {
+                  if let Some(row_offset) = self.primary_index.get(&rownum) {
+                    let _position = self
+                        .file
+                        .seek(io::SeekFrom::Start(*row_offset))
+                        .expect("Cannot seek to rownum's row");
+
+                    let row =
+                      io::BufReader::new(&self.file)
+                          .lines()
+                          .next()
+                          .transpose()
+                          .map(|r| r.map(decode_event))?;
+
+                    if let Some(event) = row {
+                      results.push(event);
+                    };
+                  };
+                }
+              };
+            };
+
+            Ok(results)
+        }
+
+        fn plan_query(&self, filter: &Filter) -> QueryPlan {
+            let operations = match filter {
               Filter::Exact(params) => {
                 if let Some(sequence) = params.get("sequence") {
-                  if let Ok(rownum) = sequence.parse::<u64>() {
-                    vec![rownum]
+                  if let Ok(rownum) = sequence.parse::<RowId>() {
+                    vec![Operations::TableAccessIndexRownum(rownum)]
                   } else {
                     vec![]
                   }
@@ -69,29 +113,7 @@ pub mod db {
               Filter::SQL(_params) => todo!()
             };
 
-            let mut results = Vec::<Event>::new();
-
-            for rownum in rows {
-              if let Some(row_offset) = self.primary_index.get(&rownum) {
-                let _position = self
-                    .file
-                    .seek(io::SeekFrom::Start(*row_offset))
-                    .expect("Cannot seek to rownum's row");
-
-                let row =
-                  io::BufReader::new(&self.file)
-                      .lines()
-                      .next()
-                      .transpose()
-                      .map(|r| r.map(decode_event))?;
-
-                if let Some(event) = row {
-                  results.push(event);
-                };
-              };
-            };
-
-            Ok(results)
+            QueryPlan { operations }
         }
 
         pub fn insert(
