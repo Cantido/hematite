@@ -1,9 +1,9 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
-use std::path::PathBuf;
+use std::{path::PathBuf, collections::HashMap};
 use rand::prelude::*;
 use cloudevents::event::Event;
 
-use hematite::db::{Database, ExpectedRevision};
+use hematite::db::{Database, ExpectedRevision, Filter};
 
 fn write_bench(c: &mut Criterion) {
     let _ = std::fs::remove_file("stream.db");
@@ -19,7 +19,7 @@ fn write_bench(c: &mut Criterion) {
 
     c.bench_function("read event", |b| b.iter_batched(
         || rng.gen_range(0..99_999),
-        |rownum| db.query(rownum).expect("Row not found").expect("Failed to read DB"),
+        |rownum| db.query(&Filter::Exact(HashMap::from([("sequence", &rownum.to_string() as &str)]))).expect("Failed to read DB"),
         BatchSize::SmallInput
     ));
 

@@ -9,6 +9,16 @@ pub mod db {
     use std::path::PathBuf;
     use anyhow::{Result, bail};
 
+    pub enum Filter<'a> {
+      Exact(HashMap<&'a str, &'a str>),
+      Prefix(HashMap<&'a str, &'a str>),
+      Suffix(HashMap<&'a str, &'a str>),
+      All(Vec<Filter<'a>>),
+      Any(Vec<Filter<'a>>),
+      Not(Box<Filter<'a>>),
+      SQL(&'a str)
+    }
+
     pub enum ExpectedRevision {
         Any,
         NoStream,
@@ -37,22 +47,51 @@ pub mod db {
             })
         }
 
-        pub fn query(&mut self, rownum: u64) -> Result<Option<Event>> {
-            let row_offset = match self.primary_index.get(&rownum) {
-              Some(row_offset) => row_offset,
-              None => return Ok(None)
-            };
-            let _position = self
-                .file
-                .seek(io::SeekFrom::Start(*row_offset))
-                .expect("Cannot seek to rownum's row");
+        pub fn query(&mut self, filter: &Filter) -> Result<Vec<Event>> {
+            let rows = match filter {
+              Filter::Exact(params) => {
+                if let Some(sequence) = params.get("sequence") {
+                  if let Ok(rownum) = sequence.parse::<u64>() {
+                    vec![rownum]
+                  } else {
+                    vec![]
+                  }
 
-              io::BufReader::new(&self.file)
-                  .lines()
-                  .next()
-                  .transpose()
-                  .map(|r| r.map(decode_event))
-                  .map_err(|e| e.into())
+                } else {
+                    vec![]
+                }
+              },
+              Filter::Prefix(_params) => todo!(),
+              Filter::Suffix(_params) => todo!(),
+              Filter::Any(_params) => todo!(),
+              Filter::All(_params) => todo!(),
+              Filter::Not(_params) => todo!(),
+              Filter::SQL(_params) => todo!()
+            };
+
+            let mut results = Vec::<Event>::new();
+
+            for rownum in rows {
+              if let Some(row_offset) = self.primary_index.get(&rownum) {
+                let _position = self
+                    .file
+                    .seek(io::SeekFrom::Start(*row_offset))
+                    .expect("Cannot seek to rownum's row");
+
+                let row =
+                  io::BufReader::new(&self.file)
+                      .lines()
+                      .next()
+                      .transpose()
+                      .map(|r| r.map(decode_event))?;
+
+                if let Some(event) = row {
+                  results.push(event);
+                };
+              };
+            };
+
+            Ok(results)
         }
 
         pub fn insert(
@@ -131,9 +170,10 @@ pub mod db {
     mod tests {
         use cloudevents::event::Event;
         use cloudevents::*;
+        use std::collections::HashMap;
         use std::path::PathBuf;
 
-        use crate::db::ExpectedRevision;
+        use crate::db::{ExpectedRevision, Filter};
 
         use super::Database;
 
@@ -172,10 +212,13 @@ pub mod db {
 
             db.insert(&mut event, ExpectedRevision::Any).expect("Could not write to the DB");
 
-            let result: Event = db
-                .query(0)
-                .expect("Row not found")
-                .expect("Failed to read row");
+            let result_set = db
+                .query(&Filter::Exact(HashMap::from([("sequence", "0")])))
+                .expect("Row not found");
+
+            let result: &Event = result_set
+                .get(0)
+                .expect("Expected the result list to have something in it");
 
             assert_eq!(result.id(), event.id());
         }
@@ -200,9 +243,11 @@ pub mod db {
 
             let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
 
-            let result = db.query(0).expect("Expected success reading empty db");
+            let result = db
+              .query(&Filter::Exact(HashMap::from([("sequence", "0")])))
+              .expect("Expected success reading empty db");
 
-            assert!(result.is_none());
+            assert!(result.is_empty());
         }
 
         #[test]
@@ -288,10 +333,13 @@ pub mod db {
                     .expect("Could not write to the DB");
             }
 
-            let result: Event = db
-                .query(100)
-                .expect("Row not found")
-                .expect("Failed to read row");
+            let result_set = db
+                .query(&Filter::Exact(HashMap::from([("sequence", "100")])))
+                .expect("Row not found");
+
+            let result: &Event = result_set
+                .get(0)
+                .expect("Expected the result set to have contents");
 
             assert_eq!(result.id(), event.id());
         }
