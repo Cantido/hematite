@@ -41,7 +41,7 @@ pub mod db {
                 .open(path)?;
 
             Ok(Database {
-                file: file,
+                file,
                 primary_index: BTreeMap::new(),
                 source_id_index: BTreeMap::new()
             })
