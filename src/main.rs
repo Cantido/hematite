@@ -6,5 +6,5 @@ fn main() -> anyhow::Result<()> {
     let _ = std::fs::remove_file("stream.db");
     let mut db = Database::new(&PathBuf::from("stream.db"))?;
 
-    db.insert(&Event::default(), ExpectedRevision::Any)
+    db.insert(&mut Event::default(), ExpectedRevision::Any)
 }

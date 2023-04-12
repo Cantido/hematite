@@ -11,8 +11,8 @@ fn write_bench(c: &mut Criterion) {
     let mut db = Database::new(&PathBuf::from("stream.db")).expect("Could not intialize DB");
 
     for _n in 1..100_000 {
-      let event = Event::default();
-      db.insert(black_box(&event), ExpectedRevision::Any).expect("Could not insert value into DB");
+      let mut event = Event::default();
+      db.insert(black_box(&mut event), ExpectedRevision::Any).expect("Could not insert value into DB");
     }
 
     let mut rng = thread_rng();

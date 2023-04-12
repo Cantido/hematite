@@ -2,7 +2,7 @@ pub mod db {
     use base64::{engine::general_purpose, Engine as _};
     use cloudevents::*;
     use cloudevents::event::Event;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::fs::File;
     use std::io::prelude::*;
     use std::io::{self, BufRead};
@@ -57,7 +57,7 @@ pub mod db {
 
         pub fn insert(
             &mut self,
-            event: &Event,
+            event: &mut Event,
             expected_revision: ExpectedRevision,
         ) -> Result<()> {
             let revision_match: bool = match expected_revision {
@@ -72,20 +72,17 @@ pub mod db {
             };
 
             if revision_match {
-                self.write_event(&event)
+                self.write_event(event)
             } else {
                 bail!("revision mismatch");
             }
         }
 
-        fn write_event(&mut self, event: &Event) -> Result<()> {
+        fn write_event(&mut self, event: &mut Event) -> Result<()> {
             if self.source_id_index.contains_key(&(event.source().to_string(), event.id().to_string())) {
               bail!("Event with that source and ID value already exists in this stream");
             }
-
             let position = self.file.seek(io::SeekFrom::End(0))?;
-            let encoded = encode_event(&event)?;
-            self.file.write_all(&encoded)?;
 
             let (event_rownum, event_offset) =
               match self.primary_index.last_key_value() {
@@ -96,6 +93,11 @@ pub mod db {
                       (last_rownum + 1, position)
                   }
               };
+
+            event.set_extension("sequence", event_rownum.to_string());
+
+            let encoded = encode_event(&event)?;
+            self.file.write_all(&encoded)?;
 
             self.primary_index.insert(event_rownum, event_offset);
             self.source_id_index.insert((event.source().to_string(), event.id().to_string()), event_rownum);
@@ -166,9 +168,9 @@ pub mod db {
 
             let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
 
-            let event = Event::default();
+            let mut event = Event::default();
 
-            db.insert(&event, ExpectedRevision::Any).expect("Could not write to the DB");
+            db.insert(&mut event, ExpectedRevision::Any).expect("Could not write to the DB");
 
             let result: Event = db
                 .query(0)
@@ -185,10 +187,10 @@ pub mod db {
 
             let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
 
-            let event = Event::default();
+            let mut event = Event::default();
 
-            db.insert(&event, ExpectedRevision::Any).expect("Could not write to the DB");
-            assert!(db.insert(&event, ExpectedRevision::Any).is_err());
+            db.insert(&mut event, ExpectedRevision::Any).expect("Could not write to the DB");
+            assert!(db.insert(&mut event, ExpectedRevision::Any).is_err());
         }
 
         #[test]
@@ -210,9 +212,9 @@ pub mod db {
 
             let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
 
-            let event = Event::default();
+            let mut event = Event::default();
 
-            db.insert(&event, ExpectedRevision::NoStream).expect("Could not write to the DB");
+            db.insert(&mut event, ExpectedRevision::NoStream).expect("Could not write to the DB");
         }
 
         #[test]
@@ -222,10 +224,10 @@ pub mod db {
 
             let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
 
-            let event1 = Event::default();
-            let event2 = Event::default();
-            db.insert(&event1, ExpectedRevision::NoStream).expect("Could not write to the DB");
-            assert!(db.insert(&event2, ExpectedRevision::NoStream).is_err());
+            let mut event1 = Event::default();
+            let mut event2 = Event::default();
+            db.insert(&mut event1, ExpectedRevision::NoStream).expect("Could not write to the DB");
+            assert!(db.insert(&mut event2, ExpectedRevision::NoStream).is_err());
         }
 
         #[test]
@@ -235,9 +237,9 @@ pub mod db {
 
             let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
 
-            let event = Event::default();
+            let mut event = Event::default();
 
-            assert!(db.insert(&event, ExpectedRevision::StreamExists).is_err());
+            assert!(db.insert(&mut event, ExpectedRevision::StreamExists).is_err());
         }
 
         #[test]
@@ -247,9 +249,9 @@ pub mod db {
 
             let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
 
-            let event = Event::default();
+            let mut event = Event::default();
 
-            assert!(db.insert(&event, ExpectedRevision::Exact(0)).is_err());
+            assert!(db.insert(&mut event, ExpectedRevision::Exact(0)).is_err());
         }
 
         #[test]
@@ -259,10 +261,10 @@ pub mod db {
 
             let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
 
-            let event1 = Event::default();
-            let event2 = Event::default();
-            db.insert(&event1, ExpectedRevision::NoStream).expect("Could not write to the DB");
-            db.insert(&event2, ExpectedRevision::Exact(0)).expect("Could not write to the DB");
+            let mut event1 = Event::default();
+            let mut event2 = Event::default();
+            db.insert(&mut event1, ExpectedRevision::NoStream).expect("Could not write to the DB");
+            db.insert(&mut event2, ExpectedRevision::Exact(0)).expect("Could not write to the DB");
         }
 
         #[test]
@@ -272,17 +274,17 @@ pub mod db {
 
             let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
 
-            let event = Event::default();
+            let mut event = Event::default();
 
             for _n in 0..100 {
-                db.insert(&Event::default(), ExpectedRevision::Any)
+                db.insert(&mut Event::default(), ExpectedRevision::Any)
                     .expect("Could not write to the DB");
             }
 
-            db.insert(&event, ExpectedRevision::Any).expect("Could not write to the DB");
+            db.insert(&mut event, ExpectedRevision::Any).expect("Could not write to the DB");
 
             for _n in 0..100 {
-                db.insert(&Event::default(), ExpectedRevision::Any)
+                db.insert(&mut Event::default(), ExpectedRevision::Any)
                     .expect("Could not write to the DB");
             }
 
