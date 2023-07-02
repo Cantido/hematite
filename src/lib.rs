@@ -2,10 +2,10 @@ pub mod db {
     use base64::{engine::general_purpose, Engine as _};
     use cloudevents::*;
     use cloudevents::event::Event;
-    use std::collections::{BTreeMap, HashMap};
-    use std::fs::File;
+    use std::collections::BTreeMap;
     use std::io::prelude::*;
-    use std::io::{self, BufRead};
+    use tokio::fs::{File, OpenOptions};
+    use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader, AsyncSeekExt};
     use std::path::PathBuf;
     use anyhow::{Result, bail};
 
@@ -23,12 +23,13 @@ pub mod db {
     }
 
     impl Database {
-        pub fn new(path: &PathBuf) -> Result<Self> {
-            let file = File::options()
+        pub async fn new(path: &PathBuf) -> Result<Self> {
+            let file = OpenOptions::new()
                 .read(true)
                 .append(true)
                 .create(true)
-                .open(path)?;
+                .open(path)
+                .await?;
 
             Ok(Database {
                 file,
@@ -37,7 +38,7 @@ pub mod db {
             })
         }
 
-        pub fn query(&mut self, rownum: u64) -> Result<Option<Event>> {
+        pub async fn query(&mut self, rownum: u64) -> Result<Option<Event>> {
             let row_offset = match self.primary_index.get(&rownum) {
               Some(row_offset) => row_offset,
               None => return Ok(None)
@@ -45,17 +46,18 @@ pub mod db {
             let _position = self
                 .file
                 .seek(io::SeekFrom::Start(*row_offset))
+                .await
                 .expect("Cannot seek to rownum's row");
 
-              io::BufReader::new(&self.file)
+              BufReader::new(&mut self.file)
                   .lines()
-                  .next()
-                  .transpose()
+                  .next_line()
+                  .await
                   .map(|r| r.map(decode_event))
                   .map_err(|e| e.into())
         }
 
-        pub fn insert(
+        pub async fn insert(
             &mut self,
             event: &mut Event,
             expected_revision: ExpectedRevision,
@@ -72,17 +74,17 @@ pub mod db {
             };
 
             if revision_match {
-                self.write_event(event)
+                self.write_event(event).await
             } else {
                 bail!("revision mismatch");
             }
         }
 
-        fn write_event(&mut self, event: &mut Event) -> Result<()> {
+        async fn write_event(&mut self, event: &mut Event) -> Result<()> {
             if self.source_id_index.contains_key(&(event.source().to_string(), event.id().to_string())) {
               bail!("Event with that source and ID value already exists in this stream");
             }
-            let position = self.file.seek(io::SeekFrom::End(0))?;
+            let position = self.file.seek(io::SeekFrom::End(0)).await?;
 
             let (event_rownum, event_offset) =
               match self.primary_index.last_key_value() {
@@ -97,7 +99,7 @@ pub mod db {
             event.set_extension("sequence", event_rownum.to_string());
 
             let encoded = encode_event(&event)?;
-            self.file.write_all(&encoded)?;
+            self.file.write_all(&encoded).await?;
 
             self.primary_index.insert(event_rownum, event_offset);
             self.source_id_index.insert((event.source().to_string(), event.id().to_string()), event_rownum);
@@ -161,135 +163,139 @@ pub mod db {
             }
         }
 
-        #[test]
-        fn can_write_and_read() {
+        #[tokio::test]
+        async fn can_write_and_read() {
             let test_file = TestFile::new("writereadtest.db");
             let _ = test_file.delete();
 
-            let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+            let mut db = Database::new(test_file.path()).await.expect("Could not initialize DB");
 
             let mut event = Event::default();
 
-            db.insert(&mut event, ExpectedRevision::Any).expect("Could not write to the DB");
+            db.insert(&mut event, ExpectedRevision::Any).await.expect("Could not write to the DB");
 
             let result: Event = db
                 .query(0)
+                .await
                 .expect("Row not found")
                 .expect("Failed to read row");
 
             assert_eq!(result.id(), event.id());
         }
 
-        #[test]
-        fn cannot_write_duplicate_event() {
+        #[tokio::test]
+        async fn cannot_write_duplicate_event() {
             let test_file = TestFile::new("writereadtest.db");
             let _ = test_file.delete();
 
-            let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+            let mut db = Database::new(test_file.path()).await.expect("Could not initialize DB");
 
             let mut event = Event::default();
 
-            db.insert(&mut event, ExpectedRevision::Any).expect("Could not write to the DB");
-            assert!(db.insert(&mut event, ExpectedRevision::Any).is_err());
+            db.insert(&mut event, ExpectedRevision::Any).await.expect("Could not write to the DB");
+            assert!(db.insert(&mut event, ExpectedRevision::Any).await.is_err());
         }
 
-        #[test]
-        fn read_nonexistent() {
+        #[tokio::test]
+        async fn read_nonexistent() {
             let test_file = TestFile::new("readnonexistent.db");
             let _ = test_file.delete();
 
-            let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+            let mut db = Database::new(test_file.path()).await.expect("Could not initialize DB");
 
-            let result = db.query(0).expect("Expected success reading empty db");
+            let result = db.query(0).await.expect("Expected success reading empty db");
 
             assert!(result.is_none());
         }
 
-        #[test]
-        fn can_write_expecting_no_stream_in_empty_db() {
+        #[tokio::test]
+        async fn can_write_expecting_no_stream_in_empty_db() {
             let test_file = TestFile::new("nostreamemptydb.db");
             let _ = test_file.delete();
 
-            let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+            let mut db = Database::new(test_file.path()).await.expect("Could not initialize DB");
 
             let mut event = Event::default();
 
-            db.insert(&mut event, ExpectedRevision::NoStream).expect("Could not write to the DB");
+            db.insert(&mut event, ExpectedRevision::NoStream).await.expect("Could not write to the DB");
         }
 
-        #[test]
-        fn cannot_write_expecting_no_stream_in_non_empty_db() {
+        #[tokio::test]
+        async fn cannot_write_expecting_no_stream_in_non_empty_db() {
             let test_file = TestFile::new("nonemptydbexpectingnostream.db");
             let _ = test_file.delete();
 
-            let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+            let mut db = Database::new(test_file.path()).await.expect("Could not initialize DB");
 
             let mut event1 = Event::default();
             let mut event2 = Event::default();
-            db.insert(&mut event1, ExpectedRevision::NoStream).expect("Could not write to the DB");
-            assert!(db.insert(&mut event2, ExpectedRevision::NoStream).is_err());
+            db.insert(&mut event1, ExpectedRevision::NoStream).await.expect("Could not write to the DB");
+            assert!(db.insert(&mut event2, ExpectedRevision::NoStream).await.is_err());
         }
 
-        #[test]
-        fn cannot_write_to_empty_db_expecting_stream_exists() {
+        #[tokio::test]
+        async fn cannot_write_to_empty_db_expecting_stream_exists() {
             let test_file = TestFile::new("emptyexpectexists.db");
             let _ = test_file.delete();
 
-            let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+            let mut db = Database::new(test_file.path()).await.expect("Could not initialize DB");
 
             let mut event = Event::default();
 
-            assert!(db.insert(&mut event, ExpectedRevision::StreamExists).is_err());
+            assert!(db.insert(&mut event, ExpectedRevision::StreamExists).await.is_err());
         }
 
-        #[test]
-        fn cannot_write_expecting_revision_zero_with_empty_db() {
+        #[tokio::test]
+        async fn cannot_write_expecting_revision_zero_with_empty_db() {
             let test_file = TestFile::new("expectrevisionzerofailure.db");
             let _ = test_file.delete();
 
-            let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+            let mut db = Database::new(test_file.path()).await.expect("Could not initialize DB");
 
             let mut event = Event::default();
 
-            assert!(db.insert(&mut event, ExpectedRevision::Exact(0)).is_err());
+            assert!(db.insert(&mut event, ExpectedRevision::Exact(0)).await.is_err());
         }
 
-        #[test]
-        fn can_write_expecting_revision_zero_with_present_row() {
+        #[tokio::test]
+        async fn can_write_expecting_revision_zero_with_present_row() {
             let test_file = TestFile::new("expectrevisionzerofailure.db");
             let _ = test_file.delete();
 
-            let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+            let mut db = Database::new(test_file.path()).await.expect("Could not initialize DB");
 
             let mut event1 = Event::default();
             let mut event2 = Event::default();
-            db.insert(&mut event1, ExpectedRevision::NoStream).expect("Could not write to the DB");
-            db.insert(&mut event2, ExpectedRevision::Exact(0)).expect("Could not write to the DB");
+            db.insert(&mut event1, ExpectedRevision::NoStream).await.expect("Could not write to the DB");
+            db.insert(&mut event2, ExpectedRevision::Exact(0)).await.expect("Could not write to the DB");
         }
 
-        #[test]
-        fn can_write_and_read_many() {
+        #[tokio::test]
+        async fn can_write_and_read_many() {
             let test_file = TestFile::new("writereadmanytest.db");
             let _ = test_file.delete();
 
-            let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+            let mut db = Database::new(test_file.path()).await.expect("Could not initialize DB");
 
             let mut event = Event::default();
 
             for _n in 0..100 {
                 db.insert(&mut Event::default(), ExpectedRevision::Any)
+                    .await
                     .expect("Could not write to the DB");
             }
 
-            db.insert(&mut event, ExpectedRevision::Any).expect("Could not write to the DB");
+            db.insert(&mut event, ExpectedRevision::Any).await.expect("Could not write to the DB");
 
             for _n in 0..100 {
                 db.insert(&mut Event::default(), ExpectedRevision::Any)
+                    .await
                     .expect("Could not write to the DB");
             }
 
             let result: Event = db
                 .query(100)
+                .await
                 .expect("Row not found")
                 .expect("Failed to read row");
 
