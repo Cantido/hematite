@@ -1,62 +1,26 @@
 pub mod db {
-    use anyhow::{bail, Result};
     use base64::{engine::general_purpose, Engine as _};
-    use cloudevents::event::Event;
     use cloudevents::*;
+    use cloudevents::event::Event;
     use std::collections::{BTreeMap, HashMap};
     use std::fs::File;
     use std::io::prelude::*;
     use std::io::{self, BufRead};
     use std::path::PathBuf;
+    use anyhow::{Result, bail};
+
 
     type RowId = u64;
     type FileOffset = u64;
 
     pub enum Filter<'a> {
-        Exact(HashMap<&'a str, &'a str>),
-        Prefix(HashMap<&'a str, &'a str>),
-        Suffix(HashMap<&'a str, &'a str>),
-        All(Vec<Filter<'a>>),
-        Any(Vec<Filter<'a>>),
-        Not(Box<Filter<'a>>),
-        SQL(&'a str),
-    }
-
-    trait Filterable {
-        fn matches(&self, filter: &Filter) -> bool;
-    }
-
-    impl Filterable for Event {
-        fn matches(&self, filter: &Filter) -> bool {
-            match filter {
-                Filter::Exact(attrs) => {
-                    let mut is_match = true;
-
-                    for (key, val) in attrs.iter() {
-                        match key {
-                            &"specversion" => is_match &= &self.specversion().to_string() == val,
-                            &"id" => is_match &= &self.id().to_string() == val,
-                            &"source" => is_match &= &self.source().to_string() == val,
-                            &"type" => is_match &= &self.ty().to_string() == val,
-                            &"subject" => is_match &= &self.subject().unwrap_or("").to_string() == val,
-                            &"datacontenttype" => is_match &= &self.datacontenttype().map(|u| u.to_string()).unwrap_or("".to_string()) == val,
-                            &"dataschema" => is_match &= &self.dataschema().map(|u| u.to_string()).unwrap_or("".to_string()) == val,
-                            &"time" => is_match &= &self.time().map(|u| u.to_string()).unwrap_or("".to_string()) == val,
-                            &"data" => todo!(),
-                            extension => is_match &= &self.extension(extension).map(|u| u.to_string()).unwrap_or("".to_string()) == val,
-                        }
-                    }
-
-                    is_match
-                },
-                Filter::Prefix(attrs) => todo!(),
-                Filter::Suffix(attrs) => todo!(),
-                Filter::All(filters) => todo!(),
-                Filter::Any(filters) => todo!(),
-                Filter::Not(filter) => todo!(),
-                Filter::SQL(query) => todo!()
-            }
-        }
+      Exact(HashMap<&'a str, &'a str>),
+      Prefix(HashMap<&'a str, &'a str>),
+      Suffix(HashMap<&'a str, &'a str>),
+      All(Vec<Filter<'a>>),
+      Any(Vec<Filter<'a>>),
+      Not(Box<Filter<'a>>),
+      SQL(&'a str)
     }
 
     pub enum ExpectedRevision {
@@ -69,16 +33,15 @@ pub mod db {
     pub struct Database {
         file: File,
         primary_index: BTreeMap<RowId, FileOffset>,
-        source_id_index: BTreeMap<(String, String), RowId>,
+        source_id_index: BTreeMap<(String, String), RowId>
     }
 
     struct QueryPlan {
-        operations: Vec<Operations>,
+      operations: Vec<Operations>
     }
 
     enum Operations {
-        TableAccessIndexRownum(RowId),
-        FullScan,
+      TableAccessIndexRownum(RowId)
     }
 
     impl Database {
@@ -92,86 +55,65 @@ pub mod db {
             Ok(Database {
                 file,
                 primary_index: BTreeMap::new(),
-                source_id_index: BTreeMap::new(),
+                source_id_index: BTreeMap::new()
             })
         }
 
         pub fn query(&mut self, filter: &Filter) -> Result<Vec<Event>> {
-            let query_plan = self
-                .plan_query(&filter)
-                .expect("Expected a valid query plan for query");
+            let query_plan = self.plan_query(&filter);
 
             let mut results = Vec::<Event>::new();
 
             for operation in query_plan.operations {
-                match operation {
-                    Operations::TableAccessIndexRownum(rownum) => {
-                        if let Some(row_offset) = self.primary_index.get(&rownum) {
-                            let _position = self
-                                .file
-                                .seek(io::SeekFrom::Start(*row_offset))
-                                .expect("Cannot seek to rownum's row");
+              match operation {
+                Operations::TableAccessIndexRownum(rownum) => {
+                  if let Some(row_offset) = self.primary_index.get(&rownum) {
+                    let _position = self
+                        .file
+                        .seek(io::SeekFrom::Start(*row_offset))
+                        .expect("Cannot seek to rownum's row");
 
-                            let row = io::BufReader::new(&self.file)
-                                .lines()
-                                .next()
-                                .transpose()
-                                .map(|r| r.map(decode_event))?;
+                    let row =
+                      io::BufReader::new(&self.file)
+                          .lines()
+                          .next()
+                          .transpose()
+                          .map(|r| r.map(decode_event))?;
 
-                            if let Some(event) = row {
-                                results.push(event);
-                            };
-                        };
-                    }
-                    Operations::FullScan => {
-                        let _position = self
-                            .file
-                            .seek(io::SeekFrom::Start(0))
-                            .expect("Cannot seek to beginning row");
-
-                        for row in io::BufReader::new(&self.file).lines() {
-                            let event = decode_event(row?);
-                            results.push(event);
-                        }
-                    }
-                };
-            }
-
-            results.retain(|e| e.matches(filter));
+                    if let Some(event) = row {
+                      results.push(event);
+                    };
+                  };
+                }
+              };
+            };
 
             Ok(results)
         }
 
-        fn plan_query(&self, filter: &Filter) -> Result<QueryPlan> {
+        fn plan_query(&self, filter: &Filter) -> QueryPlan {
             let operations = match filter {
-                Filter::Exact(params) => {
-                    if params.is_empty() {
-                        bail!("Filter params cannot be empty")
-                    }
+              Filter::Exact(params) => {
+                if let Some(sequence) = params.get("sequence") {
+                  if let Ok(rownum) = sequence.parse::<RowId>() {
+                    vec![Operations::TableAccessIndexRownum(rownum)]
+                  } else {
+                    vec![]
+                  }
 
-                    let mut operations = Vec::<Operations>::new();
-
-                    for (key, val) in params.iter() {
-                        match key {
-                            &"sequence" => {
-                                let rownum = val.parse::<RowId>()?;
-                                operations.push(Operations::TableAccessIndexRownum(rownum));
-                            }
-                            _ => operations.push(Operations::FullScan),
-                        };
-                    }
-
-                    operations
+                } else {
+                    vec![]
                 }
-                Filter::Prefix(_params) => todo!(),
-                Filter::Suffix(_params) => todo!(),
-                Filter::Any(_params) => todo!(),
-                Filter::All(_params) => todo!(),
-                Filter::Not(_params) => todo!(),
-                Filter::SQL(_params) => todo!(),
+              },
+              Filter::Prefix(_params) => todo!(),
+              Filter::Suffix(_params) => todo!(),
+              Filter::Any(_params) => todo!(),
+              Filter::All(_params) => todo!(),
+              Filter::Not(_params) => todo!(),
+              Filter::SQL(_params) => todo!()
             };
 
-            Ok(QueryPlan { operations })
+            QueryPlan { operations }
         }
 
         pub fn insert(
@@ -198,18 +140,20 @@ pub mod db {
         }
 
         fn write_event(&mut self, event: &mut Event) -> Result<()> {
-            if self
-                .source_id_index
-                .contains_key(&(event.source().to_string(), event.id().to_string()))
-            {
-                bail!("Event with that source and ID value already exists in this stream");
+            if self.source_id_index.contains_key(&(event.source().to_string(), event.id().to_string())) {
+              bail!("Event with that source and ID value already exists in this stream");
             }
             let position = self.file.seek(io::SeekFrom::End(0))?;
 
-            let (event_rownum, event_offset) = match self.primary_index.last_key_value() {
-                None => (0, 0),
-                Some((last_rownum, _offset)) => (last_rownum + 1, position),
-            };
+            let (event_rownum, event_offset) =
+              match self.primary_index.last_key_value() {
+                  None => {
+                      (0, 0)
+                  }
+                  Some((last_rownum, _offset)) => {
+                      (last_rownum + 1, position)
+                  }
+              };
 
             event.set_extension("sequence", event_rownum.to_string());
 
@@ -217,10 +161,7 @@ pub mod db {
             self.file.write_all(&encoded)?;
 
             self.primary_index.insert(event_rownum, event_offset);
-            self.source_id_index.insert(
-                (event.source().to_string(), event.id().to_string()),
-                event_rownum,
-            );
+            self.source_id_index.insert((event.source().to_string(), event.id().to_string()), event_rownum);
 
             Ok(())
         }
@@ -291,8 +232,7 @@ pub mod db {
 
             let mut event = Event::default();
 
-            db.insert(&mut event, ExpectedRevision::Any)
-                .expect("Could not write to the DB");
+            db.insert(&mut event, ExpectedRevision::Any).expect("Could not write to the DB");
 
             let result_set = db
                 .query(&Filter::Exact(HashMap::from([("sequence", "0")])))
@@ -306,33 +246,6 @@ pub mod db {
         }
 
         #[test]
-        fn can_query_by_type() {
-            let test_file = TestFile::new("typequery.db");
-            let _ = test_file.delete();
-
-            let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
-
-            let mut event = Event::default();
-            event.set_type("com.example.hematite.query");
-
-            db.insert(&mut event, ExpectedRevision::Any)
-                .expect("Could not write to the DB");
-
-            let result_set = db
-                .query(&Filter::Exact(HashMap::from([(
-                    "type",
-                    "com.example.hematite.query",
-                )])))
-                .expect("Row not found");
-
-            let result: &Event = result_set
-                .get(0)
-                .expect("Expected the result list to have something in it");
-
-            assert_eq!(result.ty(), event.ty());
-        }
-
-        #[test]
         fn cannot_write_duplicate_event() {
             let test_file = TestFile::new("writereadtest.db");
             let _ = test_file.delete();
@@ -341,8 +254,7 @@ pub mod db {
 
             let mut event = Event::default();
 
-            db.insert(&mut event, ExpectedRevision::Any)
-                .expect("Could not write to the DB");
+            db.insert(&mut event, ExpectedRevision::Any).expect("Could not write to the DB");
             assert!(db.insert(&mut event, ExpectedRevision::Any).is_err());
         }
 
@@ -354,8 +266,8 @@ pub mod db {
             let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
 
             let result = db
-                .query(&Filter::Exact(HashMap::from([("sequence", "0")])))
-                .expect("Expected success reading empty db");
+              .query(&Filter::Exact(HashMap::from([("sequence", "0")])))
+              .expect("Expected success reading empty db");
 
             assert!(result.is_empty());
         }
@@ -369,8 +281,7 @@ pub mod db {
 
             let mut event = Event::default();
 
-            db.insert(&mut event, ExpectedRevision::NoStream)
-                .expect("Could not write to the DB");
+            db.insert(&mut event, ExpectedRevision::NoStream).expect("Could not write to the DB");
         }
 
         #[test]
@@ -382,8 +293,7 @@ pub mod db {
 
             let mut event1 = Event::default();
             let mut event2 = Event::default();
-            db.insert(&mut event1, ExpectedRevision::NoStream)
-                .expect("Could not write to the DB");
+            db.insert(&mut event1, ExpectedRevision::NoStream).expect("Could not write to the DB");
             assert!(db.insert(&mut event2, ExpectedRevision::NoStream).is_err());
         }
 
@@ -396,9 +306,7 @@ pub mod db {
 
             let mut event = Event::default();
 
-            assert!(db
-                .insert(&mut event, ExpectedRevision::StreamExists)
-                .is_err());
+            assert!(db.insert(&mut event, ExpectedRevision::StreamExists).is_err());
         }
 
         #[test]
@@ -422,10 +330,8 @@ pub mod db {
 
             let mut event1 = Event::default();
             let mut event2 = Event::default();
-            db.insert(&mut event1, ExpectedRevision::NoStream)
-                .expect("Could not write to the DB");
-            db.insert(&mut event2, ExpectedRevision::Exact(0))
-                .expect("Could not write to the DB");
+            db.insert(&mut event1, ExpectedRevision::NoStream).expect("Could not write to the DB");
+            db.insert(&mut event2, ExpectedRevision::Exact(0)).expect("Could not write to the DB");
         }
 
         #[test]
@@ -442,8 +348,7 @@ pub mod db {
                     .expect("Could not write to the DB");
             }
 
-            db.insert(&mut event, ExpectedRevision::Any)
-                .expect("Could not write to the DB");
+            db.insert(&mut event, ExpectedRevision::Any).expect("Could not write to the DB");
 
             for _n in 0..100 {
                 db.insert(&mut Event::default(), ExpectedRevision::Any)
