@@ -2,7 +2,7 @@ pub mod db {
     use base64::{engine::general_purpose, Engine as _};
     use cloudevents::*;
     use cloudevents::event::Event;
-    use std::collections::BTreeMap};
+    use std::collections::BTreeMap;
     use std::fs::File;
     use std::io::prelude::*;
     use std::io::{self, BufRead};
