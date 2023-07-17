@@ -19,6 +19,21 @@ async fn hello() -> impl Responder {
 #[get("/streams/{stream}/events/{rownum}")]
 async fn get_event(state: web::Data<AppState>, stream: web::Path<(String, u64)>) -> impl Responder {
     let (stream_id, rownum) = stream.into_inner();
+
+    let init_db = {
+        let streams = state.streams.read().unwrap();
+
+        !streams.contains_key(&stream_id)
+    };
+
+    if init_db {
+        let db = Database::new(&PathBuf::from(format!("{}.db", stream_id))).unwrap();
+        let addr = DatabaseActor { database: db }.start();
+
+        let mut streams_mut = state.streams.write().unwrap();
+        streams_mut.insert(stream_id.clone(), addr);
+    }
+
     let streams = state.streams.read().unwrap();
 
     if let Some(addr) = streams.get(&stream_id) {
