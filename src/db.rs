@@ -62,10 +62,29 @@ impl Database {
             .create(true)
             .open(path)?;
 
+        let mut primary_index = BTreeMap::new();
+        let mut source_id_index = BTreeMap::new();
+
+        let mut offset = 0u64;
+        let mut rownum = 0u64;
+
+        for line in io::BufReader::new(&file).lines() {
+            let b64 = line.unwrap();
+            let rowlen: u64 = b64.len() as u64;
+
+            let event = decode_event(b64);
+            primary_index.insert(rownum, offset);
+            source_id_index.insert((event.source().to_string(), event.id().to_string()), rownum);
+
+            // offset addend is `rowlen + 1` because `BufReader::lines()` strips newlines for us
+            offset = offset + rowlen + 1;
+            rownum = rownum + 1;
+        }
+
         Ok(Database {
             file,
-            primary_index: BTreeMap::new(),
-            source_id_index: BTreeMap::new()
+            primary_index,
+            source_id_index
         })
     }
 
