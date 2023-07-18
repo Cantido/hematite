@@ -41,7 +41,9 @@ impl Handler<Append> for DatabaseActor {
     }
 }
 
+#[derive(Default)]
 pub enum ExpectedRevision {
+    #[default]
     Any,
     NoStream,
     StreamExists,

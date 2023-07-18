@@ -1,6 +1,7 @@
 use actix::prelude::*;
 use cloudevents::*;
 use hematite::db::{Database, DatabaseActor, ExpectedRevision, Append, Fetch};
+use serde::Deserialize;
 use std::{collections::HashMap, path::PathBuf};
 use std::sync::RwLock;
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
@@ -48,8 +49,13 @@ async fn get_event(state: web::Data<AppState>, stream: web::Path<(String, u64)>)
     }
 }
 
+#[derive(Deserialize, Debug)]
+struct PostEventParams {
+    expected_revision: Option<String>,
+}
+
 #[post("/streams/{stream}/events")]
-async fn post_event(state: web::Data<AppState>, stream: web::Path<String>, event: web::Json<Event>) -> impl Responder {
+async fn post_event(state: web::Data<AppState>, stream: web::Path<String>, event: web::Json<Event>, query_params: web::Query<PostEventParams>) -> impl Responder {
     let stream_id = stream.into_inner();
 
     let init_db = {
@@ -69,13 +75,26 @@ async fn post_event(state: web::Data<AppState>, stream: web::Path<String>, event
     let streams = state.streams.read().unwrap();
 
     if let Some(addr) = streams.get(&stream_id) {
-        match addr.send(Append(event.into_inner(), ExpectedRevision::Any)).await {
-            Ok(Ok(())) => return HttpResponse::Created(),
-            Ok(Err(_)) => return HttpResponse::InternalServerError(),
-            Err(_) => return HttpResponse::InternalServerError()
+        let revision_param = query_params.into_inner().expected_revision.unwrap_or("any".to_string());
+        let revision = match revision_param.as_str() {
+            "any" => ExpectedRevision::Any,
+            "no-stream" => ExpectedRevision::NoStream,
+            "stream-exists" => ExpectedRevision::StreamExists,
+            exact => {
+                if let Ok(exact_revision) = exact.parse() {
+                    ExpectedRevision::Exact(exact_revision)
+                } else {
+                    return HttpResponse::UnprocessableEntity().finish()
+                }
+            }
+        };
+        match addr.send(Append(event.into_inner(), revision)).await {
+            Ok(Ok(())) => return HttpResponse::Created().finish(),
+            Ok(Err(err)) => return HttpResponse::Conflict().body(err.to_string()),
+            Err(_) => return HttpResponse::InternalServerError().finish()
         }
     } else {
-        return HttpResponse::InternalServerError()
+        return HttpResponse::InternalServerError().finish()
     }
 }
 
