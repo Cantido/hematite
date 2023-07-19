@@ -13,6 +13,30 @@ struct AppState {
     streams: RwLock<HashMap<String, DbActorAddress>>
 }
 
+impl AppState {
+    fn initialize_database(&self, stream_id: &str) {
+        let init_db = {
+            let streams = self.streams.read().unwrap();
+
+            !streams.contains_key(stream_id)
+        };
+
+        if init_db {
+            let stream_file_name: String = BASE32_NOPAD.encode(stream_id.as_bytes());
+
+            let mut path = PathBuf::new();
+            path.set_file_name(stream_file_name);
+            path.set_extension("hemadb");
+
+            let db = Database::new(&path).unwrap();
+            let addr = DatabaseActor { database: db }.start();
+
+            let mut streams_mut = self.streams.write().unwrap();
+            streams_mut.insert(stream_id.to_owned(), addr);
+        }
+    }
+}
+
 #[get("/")]
 async fn hello() -> impl Responder {
     HttpResponse::Ok().body("Hello world!")
@@ -21,25 +45,7 @@ async fn hello() -> impl Responder {
 async fn get_event(state: web::Data<AppState>, stream: web::Path<(String, u64)>) -> impl Responder {
     let (stream_id, rownum) = stream.into_inner();
 
-    let init_db = {
-        let streams = state.streams.read().unwrap();
-
-        !streams.contains_key(&stream_id)
-    };
-
-    if init_db {
-        let stream_file_name: String = BASE32_NOPAD.encode(stream_id.as_bytes());
-
-        let mut path = PathBuf::new();
-        path.set_file_name(stream_file_name);
-        path.set_extension("hemadb");
-
-        let db = Database::new(&path).unwrap();
-        let addr = DatabaseActor { database: db }.start();
-
-        let mut streams_mut = state.streams.write().unwrap();
-        streams_mut.insert(stream_id.clone(), addr);
-    }
+    state.initialize_database(&stream_id);
 
     let streams = state.streams.read().unwrap();
 
@@ -63,25 +69,7 @@ struct PostEventParams {
 async fn post_event(req: HttpRequest, state: web::Data<AppState>, stream: web::Path<String>, event: web::Json<Event>, query_params: web::Query<PostEventParams>) -> HttpResponse {
     let stream_id = stream.into_inner();
 
-    let init_db = {
-        let streams = state.streams.read().unwrap();
-
-        !streams.contains_key(&stream_id)
-    };
-
-    if init_db {
-        let stream_file_name: String = BASE32_NOPAD.encode(stream_id.as_bytes());
-
-        let mut path = PathBuf::new();
-        path.set_file_name(stream_file_name);
-        path.set_extension("hemadb");
-
-        let db = Database::new(&path).unwrap();
-        let addr = DatabaseActor { database: db }.start();
-
-        let mut streams_mut = state.streams.write().unwrap();
-        streams_mut.insert(stream_id.clone(), addr);
-    }
+    state.initialize_database(&stream_id);
 
     let streams = state.streams.read().unwrap();
 
@@ -111,6 +99,7 @@ async fn post_event(req: HttpRequest, state: web::Data<AppState>, stream: web::P
         return HttpResponse::InternalServerError().finish()
     }
 }
+
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
