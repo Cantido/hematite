@@ -4,7 +4,7 @@ use hematite::db::{Database, DatabaseActor, ExpectedRevision, Append, Fetch};
 use serde::Deserialize;
 use std::{collections::HashMap, path::PathBuf};
 use std::sync::RwLock;
-use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{get, web, App, HttpRequest, HttpResponse, HttpServer, Responder, guard};
 
 type DbActorAddress = actix::Addr<DatabaseActor>;
 
@@ -17,7 +17,6 @@ async fn hello() -> impl Responder {
     HttpResponse::Ok().body("Hello world!")
 }
 
-#[get("/streams/{stream}/events/{rownum}")]
 async fn get_event(state: web::Data<AppState>, stream: web::Path<(String, u64)>) -> impl Responder {
     let (stream_id, rownum) = stream.into_inner();
 
@@ -54,8 +53,7 @@ struct PostEventParams {
     expected_revision: Option<String>,
 }
 
-#[post("/streams/{stream}/events")]
-async fn post_event(state: web::Data<AppState>, stream: web::Path<String>, event: web::Json<Event>, query_params: web::Query<PostEventParams>) -> impl Responder {
+async fn post_event(req: HttpRequest, state: web::Data<AppState>, stream: web::Path<String>, event: web::Json<Event>, query_params: web::Query<PostEventParams>) -> HttpResponse {
     let stream_id = stream.into_inner();
 
     let init_db = {
@@ -89,7 +87,10 @@ async fn post_event(state: web::Data<AppState>, stream: web::Path<String>, event
             }
         };
         match addr.send(Append(event.into_inner(), revision)).await {
-            Ok(Ok(())) => return HttpResponse::Created().finish(),
+            Ok(Ok(rownum)) => {
+                let event_url = req.url_for("stream_events_rownum", [stream_id, rownum.to_string()]).unwrap().to_string();
+                return HttpResponse::Created().insert_header(("location", event_url)).finish()
+            },
             Ok(Err(err)) => return HttpResponse::Conflict().body(err.to_string()),
             Err(_) => return HttpResponse::InternalServerError().finish()
         }
@@ -107,8 +108,20 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(state.clone())
             .service(hello)
-            .service(get_event)
-            .service(post_event)
+            .service(
+                web::scope("/streams/{stream}")
+                    .service(
+                        web::resource("/events")
+                            .name("stream_events")
+                            .guard(guard::Header("content-type", "application/json"))
+                            .route(web::post().to(post_event))
+                    )
+                    .service(
+                        web::resource("/events/{rownum}")
+                            .name("stream_events_rownum")
+                            .route(web::get().to(get_event))
+                    )
+            )
     })
     .bind(("127.0.0.1", 8080))?
     .run()

@@ -22,7 +22,7 @@ impl Actor for DatabaseActor {
 pub struct Fetch(pub u64);
 
 #[derive(Message)]
-#[rtype(result = "Result<()>")]
+#[rtype(result = "Result<u64>")]
 pub struct Append(pub Event, pub ExpectedRevision);
 
 impl Handler<Fetch> for DatabaseActor {
@@ -34,7 +34,7 @@ impl Handler<Fetch> for DatabaseActor {
 }
 
 impl Handler<Append> for DatabaseActor {
-    type Result = Result<()>;
+    type Result = Result<u64>;
 
     fn handle(&mut self, msg: Append, _ctx: &mut Context<Self>) -> Self::Result {
         self.database.insert(msg.0, msg.1)
@@ -112,7 +112,7 @@ impl Database {
         &mut self,
         event: Event,
         expected_revision: ExpectedRevision,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         let revision_match: bool = match expected_revision {
             ExpectedRevision::Any => true,
             ExpectedRevision::NoStream => self.primary_index.last_key_value().is_none(),
@@ -125,7 +125,8 @@ impl Database {
         };
 
         if revision_match {
-            self.write_event(event)
+            self.write_event(event)?;
+            Ok(self.primary_index.last_key_value().unwrap().1.clone())
         } else {
             bail!("revision mismatch");
         }
