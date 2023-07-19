@@ -1,12 +1,12 @@
 use actix::prelude::*;
-use base64::{engine::general_purpose, Engine as _};
 use cloudevents::*;
 use cloudevents::event::Event;
+use data_encoding::BASE64_NOPAD;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::{self, BufRead};
-use std::path::PathBuf;
+use std::path::Path;
 use anyhow::{Result, bail};
 
 pub struct DatabaseActor {
@@ -57,7 +57,7 @@ pub struct Database {
 }
 
 impl Database {
-    pub fn new(path: &PathBuf) -> Result<Self> {
+    pub fn new(path: &Path) -> Result<Self> {
         let file = File::options()
             .read(true)
             .append(true)
@@ -160,7 +160,7 @@ impl Database {
 
 fn encode_event(event: &Event) -> Result<Vec<u8>> {
     let json = serde_json::to_string(&event)?;
-    let encoded: String = general_purpose::STANDARD_NO_PAD.encode(json);
+    let encoded: String = BASE64_NOPAD.encode(json.as_bytes());
 
     let mut row = Vec::new();
     write!(&mut row, "{}\n", encoded)?;
@@ -169,8 +169,7 @@ fn encode_event(event: &Event) -> Result<Vec<u8>> {
 
 fn decode_event(row: String) -> Event {
     let trimmed_b64 = row.trim_end();
-    let json_bytes = general_purpose::STANDARD_NO_PAD
-        .decode(trimmed_b64)
+    let json_bytes = BASE64_NOPAD.decode(trimmed_b64.as_bytes())
         .expect("Expected row to be decodable from base64");
     let json = String::from_utf8(json_bytes).expect("Expected row to be valid UTF8");
 

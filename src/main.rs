@@ -1,5 +1,6 @@
 use actix::prelude::*;
 use cloudevents::*;
+use data_encoding::BASE32_NOPAD;
 use hematite::db::{Database, DatabaseActor, ExpectedRevision, Append, Fetch};
 use serde::Deserialize;
 use std::{collections::HashMap, path::PathBuf};
@@ -27,7 +28,13 @@ async fn get_event(state: web::Data<AppState>, stream: web::Path<(String, u64)>)
     };
 
     if init_db {
-        let db = Database::new(&PathBuf::from(format!("{}.db", stream_id))).unwrap();
+        let stream_file_name: String = BASE32_NOPAD.encode(stream_id.as_bytes());
+
+        let mut path = PathBuf::new();
+        path.set_file_name(stream_file_name);
+        path.set_extension("hemadb");
+
+        let db = Database::new(&path).unwrap();
         let addr = DatabaseActor { database: db }.start();
 
         let mut streams_mut = state.streams.write().unwrap();
@@ -63,7 +70,13 @@ async fn post_event(req: HttpRequest, state: web::Data<AppState>, stream: web::P
     };
 
     if init_db {
-        let db = Database::new(&PathBuf::from(format!("{}.db", stream_id))).unwrap();
+        let stream_file_name: String = BASE32_NOPAD.encode(stream_id.as_bytes());
+
+        let mut path = PathBuf::new();
+        path.set_file_name(stream_file_name);
+        path.set_extension("hemadb");
+
+        let db = Database::new(&path).unwrap();
         let addr = DatabaseActor { database: db }.start();
 
         let mut streams_mut = state.streams.write().unwrap();
