@@ -3,17 +3,25 @@ use cloudevents::*;
 use data_encoding::BASE32_NOPAD;
 use hematite::db::{Database, DatabaseActor, ExpectedRevision, Append, Fetch, AppendBatch};
 use serde::Deserialize;
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, env, path::PathBuf};
 use std::sync::RwLock;
 use actix_web::{get, web, App, HttpRequest, HttpResponse, HttpServer, Responder, guard};
 
 type DbActorAddress = actix::Addr<DatabaseActor>;
 
 struct AppState {
+    streams_path: PathBuf,
     streams: RwLock<HashMap<String, DbActorAddress>>
 }
 
 impl AppState {
+    fn new() -> Self {
+        AppState {
+            streams_path: PathBuf::from(env::var("HEMATITE_STREAMS_DIR").unwrap()),
+            streams: RwLock::new(HashMap::new()),
+        }
+    }
+
     fn initialize_database(&self, stream_id: &str) {
         let init_db = {
             let streams = self.streams.read().unwrap();
@@ -24,7 +32,7 @@ impl AppState {
         if init_db {
             let stream_file_name: String = BASE32_NOPAD.encode(stream_id.as_bytes());
 
-            let mut path = PathBuf::new();
+            let mut path = self.streams_path.clone();
             path.set_file_name(stream_file_name);
             path.set_extension("hemadb");
 
@@ -34,6 +42,13 @@ impl AppState {
             let mut streams_mut = self.streams.write().unwrap();
             streams_mut.insert(stream_id.to_owned(), addr);
         }
+    }
+
+    fn get_stream_address(&self, stream_id: &str) -> Option<DbActorAddress> {
+        let streams = self.streams.read().unwrap();
+        let addr = streams.get(stream_id);
+
+        addr.map(|a| a.to_owned())
     }
 }
 
@@ -45,11 +60,9 @@ async fn hello() -> impl Responder {
 async fn get_event(state: web::Data<AppState>, stream: web::Path<(String, u64)>) -> impl Responder {
     let (stream_id, rownum) = stream.into_inner();
 
-    state.initialize_database(&stream_id);
+    let addr_option = state.get_stream_address(&stream_id);
 
-    let streams = state.streams.read().unwrap();
-
-    if let Some(addr) = streams.get(&stream_id) {
+    if let Some(addr) = addr_option {
         match addr.send(Fetch(rownum)).await {
             Ok(Ok(Some(event))) => return HttpResponse::Ok().json(event),
             Ok(Ok(None)) => return HttpResponse::NotFound().json("Not Found"),
@@ -73,53 +86,60 @@ enum PostEventPayload {
     Batch(Vec<Event>),
 }
 
-
 async fn post_event(req: HttpRequest, state: web::Data<AppState>, stream: web::Path<String>, payload: web::Json<PostEventPayload>, query_params: web::Query<PostEventParams>) -> HttpResponse {
+
+    let revision = {
+        let revision_param = query_params.into_inner().expected_revision.unwrap_or("any".to_string());
+        let revision_result = parse_expected_revision(revision_param.as_str());
+
+        if revision_result.is_err() {
+            return HttpResponse::UnprocessableEntity().finish()
+        }
+
+         revision_result.unwrap()
+    };
+
+
     let stream_id = stream.into_inner();
 
     state.initialize_database(&stream_id);
 
-    let streams = state.streams.read().unwrap();
+    let addr = state.get_stream_address(&stream_id).unwrap();
 
-    if let Some(addr) = streams.get(&stream_id) {
-        let revision_param = query_params.into_inner().expected_revision.unwrap_or("any".to_string());
-        let revision = match revision_param.as_str() {
-            "any" => ExpectedRevision::Any,
-            "no-stream" => ExpectedRevision::NoStream,
-            "stream-exists" => ExpectedRevision::StreamExists,
-            exact => {
-                if let Ok(exact_revision) = exact.parse() {
-                    ExpectedRevision::Exact(exact_revision)
-                } else {
-                    return HttpResponse::UnprocessableEntity().finish()
-                }
+    let result = match payload.into_inner() {
+        PostEventPayload::Single(event) => addr.send(Append(event, revision)).await,
+        PostEventPayload::Batch(events) => addr.send(AppendBatch(events, revision)).await,
+    };
+
+    match result {
+        Ok(Ok(rownum)) => {
+            let event_url = req.url_for("stream_events_rownum", [stream_id, rownum.to_string()]).unwrap().to_string();
+            return HttpResponse::Created().insert_header(("location", event_url)).finish()
+        },
+        Ok(Err(err)) => return HttpResponse::Conflict().body(err.to_string()),
+        Err(_) => return HttpResponse::InternalServerError().finish()
+    }
+}
+
+fn parse_expected_revision(expected_revision: &str) -> Result<ExpectedRevision, String> {
+    match expected_revision {
+        "any" => Ok(ExpectedRevision::Any),
+        "no-stream" => Ok(ExpectedRevision::NoStream),
+        "stream-exists" => Ok(ExpectedRevision::StreamExists),
+        exact => {
+            if let Ok(exact_revision) = exact.parse() {
+                Ok(ExpectedRevision::Exact(exact_revision))
+            } else {
+                Err("String was not a revision number or a recognized token".to_string())
             }
-        };
-
-        let result = match payload.into_inner() {
-            PostEventPayload::Single(event) => addr.send(Append(event, revision)).await,
-            PostEventPayload::Batch(events) => addr.send(AppendBatch(events, revision)).await,
-        };
-
-        match result {
-            Ok(Ok(rownum)) => {
-                let event_url = req.url_for("stream_events_rownum", [stream_id, rownum.to_string()]).unwrap().to_string();
-                return HttpResponse::Created().insert_header(("location", event_url)).finish()
-            },
-            Ok(Err(err)) => return HttpResponse::Conflict().body(err.to_string()),
-            Err(_) => return HttpResponse::InternalServerError().finish()
         }
-    } else {
-        return HttpResponse::InternalServerError().finish()
     }
 }
 
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let state = web::Data::new(AppState {
-        streams: RwLock::new(HashMap::new())
-    });
+    let state = web::Data::new(AppState::new());
     HttpServer::new(move || {
         App::new()
             .app_data(state.clone())
