@@ -1,19 +1,19 @@
 use actix::prelude::*;
+use actix_web::{get, guard, web, App, HttpRequest, HttpResponse, HttpServer, Responder};
 use cloudevents::*;
 use data_encoding::BASE32_NOPAD;
-use hematite::db::{Database, DatabaseActor, ExpectedRevision, Append, Fetch, AppendBatch};
+use hematite::db::{Append, AppendBatch, Database, DatabaseActor, ExpectedRevision, Fetch};
 use log::info;
 use log4rs;
 use serde::Deserialize;
-use std::{collections::HashMap, env, path::PathBuf};
 use std::sync::RwLock;
-use actix_web::{get, web, App, HttpRequest, HttpResponse, HttpServer, Responder, guard};
+use std::{collections::HashMap, env, path::PathBuf};
 
 type DbActorAddress = actix::Addr<DatabaseActor>;
 
 struct AppState {
     streams_path: PathBuf,
-    streams: RwLock<HashMap<String, DbActorAddress>>
+    streams: RwLock<HashMap<String, DbActorAddress>>,
 }
 
 impl AppState {
@@ -69,10 +69,10 @@ async fn get_event(state: web::Data<AppState>, stream: web::Path<(String, u64)>)
             Ok(Ok(Some(event))) => return HttpResponse::Ok().json(event),
             Ok(Ok(None)) => return HttpResponse::NotFound().json("Not Found"),
             Ok(Err(_)) => return HttpResponse::InternalServerError().json("Internal Server Error"),
-            Err(_) => return HttpResponse::InternalServerError().json("Internal Server Error")
+            Err(_) => return HttpResponse::InternalServerError().json("Internal Server Error"),
         }
     } else {
-        return HttpResponse::NotFound().json("Not Found")
+        return HttpResponse::NotFound().json("Not Found");
     }
 }
 
@@ -88,19 +88,26 @@ enum PostEventPayload {
     Batch(Vec<Event>),
 }
 
-async fn post_event(req: HttpRequest, state: web::Data<AppState>, stream: web::Path<String>, payload: web::Json<PostEventPayload>, query_params: web::Query<PostEventParams>) -> HttpResponse {
-
+async fn post_event(
+    req: HttpRequest,
+    state: web::Data<AppState>,
+    stream: web::Path<String>,
+    payload: web::Json<PostEventPayload>,
+    query_params: web::Query<PostEventParams>,
+) -> HttpResponse {
     let revision = {
-        let revision_param = query_params.into_inner().expected_revision.unwrap_or("any".to_string());
+        let revision_param = query_params
+            .into_inner()
+            .expected_revision
+            .unwrap_or("any".to_string());
         let revision_result = parse_expected_revision(revision_param.as_str());
 
         if revision_result.is_err() {
-            return HttpResponse::UnprocessableEntity().finish()
+            return HttpResponse::UnprocessableEntity().finish();
         }
 
-         revision_result.unwrap()
+        revision_result.unwrap()
     };
-
 
     let stream_id = stream.into_inner();
 
@@ -115,11 +122,16 @@ async fn post_event(req: HttpRequest, state: web::Data<AppState>, stream: web::P
 
     match result {
         Ok(Ok(rownum)) => {
-            let event_url = req.url_for("stream_events_rownum", [stream_id, rownum.to_string()]).unwrap().to_string();
-            return HttpResponse::Created().insert_header(("location", event_url)).finish()
-        },
+            let event_url = req
+                .url_for("stream_events_rownum", [stream_id, rownum.to_string()])
+                .unwrap()
+                .to_string();
+            return HttpResponse::Created()
+                .insert_header(("location", event_url))
+                .finish();
+        }
         Ok(Err(err)) => return HttpResponse::Conflict().body(err.to_string()),
-        Err(_) => return HttpResponse::InternalServerError().finish()
+        Err(_) => return HttpResponse::InternalServerError().finish(),
     }
 }
 
@@ -138,7 +150,6 @@ fn parse_expected_revision(expected_revision: &str) -> Result<ExpectedRevision, 
     }
 }
 
-
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
@@ -152,23 +163,20 @@ async fn main() -> std::io::Result<()> {
 
     let state = web::Data::new(AppState::new(streams_dir));
     HttpServer::new(move || {
-        App::new()
-            .app_data(state.clone())
-            .service(hello)
-            .service(
-                web::scope("/streams/{stream}")
-                    .service(
-                        web::resource("/events")
-                            .name("stream_events")
-                            .guard(guard::Header("content-type", "application/json"))
-                            .route(web::post().to(post_event))
-                    )
-                    .service(
-                        web::resource("/events/{rownum}")
-                            .name("stream_events_rownum")
-                            .route(web::get().to(get_event))
-                    )
-            )
+        App::new().app_data(state.clone()).service(hello).service(
+            web::scope("/streams/{stream}")
+                .service(
+                    web::resource("/events")
+                        .name("stream_events")
+                        .guard(guard::Header("content-type", "application/json"))
+                        .route(web::post().to(post_event)),
+                )
+                .service(
+                    web::resource("/events/{rownum}")
+                        .name("stream_events_rownum")
+                        .route(web::get().to(get_event)),
+                ),
+        )
     })
     .bind(("127.0.0.1", 8080))?
     .run()

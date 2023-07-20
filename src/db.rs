@@ -1,13 +1,13 @@
 use actix::prelude::*;
-use cloudevents::*;
+use anyhow::{bail, Result};
 use cloudevents::event::Event;
+use cloudevents::*;
 use data_encoding::BASE64_NOPAD;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::{self, BufRead};
 use std::path::Path;
-use anyhow::{Result, bail};
 
 pub struct DatabaseActor {
     pub database: Database,
@@ -65,7 +65,7 @@ pub enum ExpectedRevision {
 pub struct Database {
     file: File,
     primary_index: BTreeMap<u64, u64>,
-    source_id_index: BTreeMap<(String, String), u64>
+    source_id_index: BTreeMap<(String, String), u64>,
 }
 
 impl Database {
@@ -98,33 +98,29 @@ impl Database {
         Ok(Database {
             file,
             primary_index,
-            source_id_index
+            source_id_index,
         })
     }
 
     pub fn query(&mut self, rownum: u64) -> Result<Option<Event>> {
         let row_offset = match self.primary_index.get(&rownum) {
-          Some(row_offset) => row_offset,
-          None => return Ok(None)
+            Some(row_offset) => row_offset,
+            None => return Ok(None),
         };
         let _position = self
             .file
             .seek(io::SeekFrom::Start(*row_offset))
             .expect("Cannot seek to rownum's row");
 
-          io::BufReader::new(&self.file)
-              .lines()
-              .next()
-              .transpose()
-              .map(|r| r.map(decode_event))
-              .map_err(|e| e.into())
+        io::BufReader::new(&self.file)
+            .lines()
+            .next()
+            .transpose()
+            .map(|r| r.map(decode_event))
+            .map_err(|e| e.into())
     }
 
-    pub fn insert(
-        &mut self,
-        event: Event,
-        expected_revision: ExpectedRevision,
-    ) -> Result<u64> {
+    pub fn insert(&mut self, event: Event, expected_revision: ExpectedRevision) -> Result<u64> {
         let revision_match: bool = match expected_revision {
             ExpectedRevision::Any => true,
             ExpectedRevision::NoStream => self.primary_index.last_key_value().is_none(),
@@ -171,26 +167,27 @@ impl Database {
     }
 
     fn write_event(&mut self, event: Event) -> Result<()> {
-        if self.source_id_index.contains_key(&(event.source().to_string(), event.id().to_string())) {
-          bail!("Event with that source and ID value already exists in this stream");
+        if self
+            .source_id_index
+            .contains_key(&(event.source().to_string(), event.id().to_string()))
+        {
+            bail!("Event with that source and ID value already exists in this stream");
         }
         let position = self.file.seek(io::SeekFrom::End(0))?;
 
-        let (event_rownum, event_offset) =
-          match self.primary_index.last_key_value() {
-              None => {
-                  (0, 0)
-              }
-              Some((last_rownum, _offset)) => {
-                  (last_rownum + 1, position)
-              }
-          };
+        let (event_rownum, event_offset) = match self.primary_index.last_key_value() {
+            None => (0, 0),
+            Some((last_rownum, _offset)) => (last_rownum + 1, position),
+        };
 
         let encoded = encode_event(&event)?;
         self.file.write_all(&encoded)?;
 
         self.primary_index.insert(event_rownum, event_offset);
-        self.source_id_index.insert((event.source().to_string(), event.id().to_string()), event_rownum);
+        self.source_id_index.insert(
+            (event.source().to_string(), event.id().to_string()),
+            event_rownum,
+        );
 
         Ok(())
     }
@@ -207,7 +204,8 @@ fn encode_event(event: &Event) -> Result<Vec<u8>> {
 
 fn decode_event(row: String) -> Event {
     let trimmed_b64 = row.trim_end();
-    let json_bytes = BASE64_NOPAD.decode(trimmed_b64.as_bytes())
+    let json_bytes = BASE64_NOPAD
+        .decode(trimmed_b64.as_bytes())
         .expect("Expected row to be decodable from base64");
     let json = String::from_utf8(json_bytes).expect("Expected row to be valid UTF8");
 
@@ -259,7 +257,8 @@ mod tests {
 
         let event = Event::default();
 
-        db.insert(event.clone(), ExpectedRevision::Any).expect("Could not write to the DB");
+        db.insert(event.clone(), ExpectedRevision::Any)
+            .expect("Could not write to the DB");
 
         let result: Event = db
             .query(0)
@@ -278,7 +277,8 @@ mod tests {
 
         let event = Event::default();
 
-        db.insert(event.clone(), ExpectedRevision::Any).expect("Could not write to the DB");
+        db.insert(event.clone(), ExpectedRevision::Any)
+            .expect("Could not write to the DB");
         assert!(db.insert(event.clone(), ExpectedRevision::Any).is_err());
     }
 
@@ -303,7 +303,8 @@ mod tests {
 
         let event = Event::default();
 
-        db.insert(event, ExpectedRevision::NoStream).expect("Could not write to the DB");
+        db.insert(event, ExpectedRevision::NoStream)
+            .expect("Could not write to the DB");
     }
 
     #[test]
@@ -315,7 +316,8 @@ mod tests {
 
         let event1 = Event::default();
         let event2 = Event::default();
-        db.insert(event1, ExpectedRevision::NoStream).expect("Could not write to the DB");
+        db.insert(event1, ExpectedRevision::NoStream)
+            .expect("Could not write to the DB");
         assert!(db.insert(event2, ExpectedRevision::NoStream).is_err());
     }
 
@@ -352,8 +354,10 @@ mod tests {
 
         let event1 = Event::default();
         let event2 = Event::default();
-        db.insert(event1, ExpectedRevision::NoStream).expect("Could not write to the DB");
-        db.insert(event2, ExpectedRevision::Exact(0)).expect("Could not write to the DB");
+        db.insert(event1, ExpectedRevision::NoStream)
+            .expect("Could not write to the DB");
+        db.insert(event2, ExpectedRevision::Exact(0))
+            .expect("Could not write to the DB");
     }
 
     #[test]
@@ -370,7 +374,8 @@ mod tests {
                 .expect("Could not write to the DB");
         }
 
-        db.insert(event.clone(), ExpectedRevision::Any).expect("Could not write to the DB");
+        db.insert(event.clone(), ExpectedRevision::Any)
+            .expect("Could not write to the DB");
 
         for _n in 0..100 {
             db.insert(Event::default(), ExpectedRevision::Any)
