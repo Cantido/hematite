@@ -2,6 +2,8 @@ use actix::prelude::*;
 use cloudevents::*;
 use data_encoding::BASE32_NOPAD;
 use hematite::db::{Database, DatabaseActor, ExpectedRevision, Append, Fetch, AppendBatch};
+use log::info;
+use log4rs;
 use serde::Deserialize;
 use std::{collections::HashMap, env, path::PathBuf};
 use std::sync::RwLock;
@@ -15,9 +17,9 @@ struct AppState {
 }
 
 impl AppState {
-    fn new() -> Self {
+    fn new(streams_path: PathBuf) -> Self {
         AppState {
-            streams_path: PathBuf::from(env::var("HEMATITE_STREAMS_DIR").unwrap()),
+            streams_path,
             streams: RwLock::new(HashMap::new()),
         }
     }
@@ -139,7 +141,16 @@ fn parse_expected_revision(expected_revision: &str) -> Result<ExpectedRevision, 
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let state = web::Data::new(AppState::new());
+    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+    const STREAMS_DIR: &'static str = env!("HEMATITE_STREAMS_DIR");
+    let streams_dir = PathBuf::from(STREAMS_DIR);
+
+    log4rs::init_file("config/log4rs.yml", Default::default()).unwrap();
+
+    info!("Starting Hematite DB version {}", VERSION);
+    info!("Stream database directory: {}", streams_dir.display());
+
+    let state = web::Data::new(AppState::new(streams_dir));
     HttpServer::new(move || {
         App::new()
             .app_data(state.clone())
