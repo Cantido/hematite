@@ -6,8 +6,7 @@ use hematite::db::{Append, AppendBatch, Database, DatabaseActor, ExpectedRevisio
 use log::info;
 use log4rs;
 use serde::Deserialize;
-use std::sync::RwLock;
-use std::{collections::HashMap, env, path::PathBuf};
+use std::{collections::HashMap, env, fs, path::PathBuf, str, sync::RwLock};
 
 type DbActorAddress = actix::Addr<DatabaseActor>;
 
@@ -18,10 +17,31 @@ struct AppState {
 
 impl AppState {
     fn new(streams_path: PathBuf) -> Self {
-        AppState {
+        let state = AppState {
             streams_path,
             streams: RwLock::new(HashMap::new()),
+        };
+
+        for entry in state
+            .streams_path
+            .read_dir()
+            .expect("Couldn't read stream directory")
+        {
+            if let Ok(file) = entry {
+                let filepath = file.path();
+                let encoded_stream_id = filepath.file_stem().unwrap().to_str();
+                let stream_id_bytes = BASE32_NOPAD
+                    .decode(encoded_stream_id.unwrap().as_bytes())
+                    .expect("Expected file in stream dir to have a Base32 no-pad encoded filename");
+                let stream_id = str::from_utf8(stream_id_bytes.as_slice()).unwrap();
+
+                info!("Initializing stream {}", &stream_id);
+
+                state.initialize_database(&stream_id);
+            }
         }
+
+        state
     }
 
     fn initialize_database(&self, stream_id: &str) {
@@ -35,7 +55,7 @@ impl AppState {
             let stream_file_name: String = BASE32_NOPAD.encode(stream_id.as_bytes());
 
             let mut path = self.streams_path.clone();
-            path.set_file_name(stream_file_name);
+            path.push(stream_file_name);
             path.set_extension("hemadb");
 
             let db = Database::new(&path).unwrap();
@@ -152,11 +172,12 @@ fn parse_expected_revision(expected_revision: &str) -> Result<ExpectedRevision, 
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    log4rs::init_file("config/log4rs.yml", Default::default()).unwrap();
+
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
     const STREAMS_DIR: &'static str = env!("HEMATITE_STREAMS_DIR");
     let streams_dir = PathBuf::from(STREAMS_DIR);
-
-    log4rs::init_file("config/log4rs.yml", Default::default()).unwrap();
+    fs::create_dir_all(&streams_dir).expect("Could not create stream database directory.");
 
     info!("Starting Hematite DB version {}", VERSION);
     info!("Stream database directory: {}", streams_dir.display());
