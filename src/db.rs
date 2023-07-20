@@ -25,6 +25,10 @@ pub struct Fetch(pub u64);
 #[rtype(result = "Result<u64>")]
 pub struct Append(pub Event, pub ExpectedRevision);
 
+#[derive(Message)]
+#[rtype(result = "Result<u64>")]
+pub struct AppendBatch(pub Vec<Event>, pub ExpectedRevision);
+
 impl Handler<Fetch> for DatabaseActor {
     type Result = Result<Option<Event>>;
 
@@ -38,6 +42,14 @@ impl Handler<Append> for DatabaseActor {
 
     fn handle(&mut self, msg: Append, _ctx: &mut Context<Self>) -> Self::Result {
         self.database.insert(msg.0, msg.1)
+    }
+}
+
+impl Handler<AppendBatch> for DatabaseActor {
+    type Result = Result<u64>;
+
+    fn handle(&mut self, msg: AppendBatch, _ctx: &mut Context<Self>) -> Self::Result {
+        self.database.insert_batch(msg.0, msg.1)
     }
 }
 
@@ -126,6 +138,32 @@ impl Database {
 
         if revision_match {
             self.write_event(event)?;
+            Ok(self.primary_index.last_key_value().unwrap().1.clone())
+        } else {
+            bail!("revision mismatch");
+        }
+    }
+
+    pub fn insert_batch(
+        &mut self,
+        events: Vec<Event>,
+        expected_revision: ExpectedRevision,
+    ) -> Result<u64> {
+        let revision_match: bool = match expected_revision {
+            ExpectedRevision::Any => true,
+            ExpectedRevision::NoStream => self.primary_index.last_key_value().is_none(),
+            ExpectedRevision::StreamExists => self.primary_index.last_key_value().is_some(),
+            ExpectedRevision::Exact(revision) => self
+                .primary_index
+                .last_key_value()
+                .map(|t| t.0)
+                .map_or(false, |r| r == &revision),
+        };
+
+        if revision_match {
+            for event in events.iter() {
+                self.write_event(event.clone())?;
+            }
             Ok(self.primary_index.last_key_value().unwrap().1.clone())
         } else {
             bail!("revision mismatch");

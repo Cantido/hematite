@@ -1,7 +1,7 @@
 use actix::prelude::*;
 use cloudevents::*;
 use data_encoding::BASE32_NOPAD;
-use hematite::db::{Database, DatabaseActor, ExpectedRevision, Append, Fetch};
+use hematite::db::{Database, DatabaseActor, ExpectedRevision, Append, Fetch, AppendBatch};
 use serde::Deserialize;
 use std::{collections::HashMap, path::PathBuf};
 use std::sync::RwLock;
@@ -66,7 +66,15 @@ struct PostEventParams {
     expected_revision: Option<String>,
 }
 
-async fn post_event(req: HttpRequest, state: web::Data<AppState>, stream: web::Path<String>, event: web::Json<Event>, query_params: web::Query<PostEventParams>) -> HttpResponse {
+#[derive(Deserialize, Debug)]
+#[serde(untagged)]
+enum PostEventPayload {
+    Single(Event),
+    Batch(Vec<Event>),
+}
+
+
+async fn post_event(req: HttpRequest, state: web::Data<AppState>, stream: web::Path<String>, payload: web::Json<PostEventPayload>, query_params: web::Query<PostEventParams>) -> HttpResponse {
     let stream_id = stream.into_inner();
 
     state.initialize_database(&stream_id);
@@ -87,7 +95,13 @@ async fn post_event(req: HttpRequest, state: web::Data<AppState>, stream: web::P
                 }
             }
         };
-        match addr.send(Append(event.into_inner(), revision)).await {
+
+        let result = match payload.into_inner() {
+            PostEventPayload::Single(event) => addr.send(Append(event, revision)).await,
+            PostEventPayload::Batch(events) => addr.send(AppendBatch(events, revision)).await,
+        };
+
+        match result {
             Ok(Ok(rownum)) => {
                 let event_url = req.url_for("stream_events_rownum", [stream_id, rownum.to_string()]).unwrap().to_string();
                 return HttpResponse::Created().insert_header(("location", event_url)).finish()
