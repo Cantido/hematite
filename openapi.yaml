@@ -1,0 +1,79 @@
+openapi: 3.1.0
+info:
+  description: "Hematite is a CloudEvents-compatible event store for Event Sourcing"
+  version: 0.1.0
+  title: Hematite DB
+  contact:
+    email: cosmic.lady.rosa@gmail.com
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+servers:
+  - url: https://localhost:8080
+tags:
+  - name: events
+    description: Read and append events
+paths:
+  /streams/{streamid}/events:
+    post:
+      tags:
+        - events
+      summary: Add a new event to the store
+      description: ""
+      operationId: appendEvent
+      parameters:
+        - name: streamid
+          in: path
+          description: stream to append the event to
+          required: true
+          schema:
+            type: string
+      requestBody:
+        $ref: "#/components/requestBodies/Event"
+      responses:
+        "201":
+          description: The event was successfully appended to the stream
+        "409":
+          description: Expected revision did not match
+  /streams/{streamid}/events/{revision}:
+    get:
+      tags:
+        - events
+      summary: Get event by revision number
+      description: ""
+      operationId: getStreamRevision
+      parameters:
+        - name: streamid
+          in: path
+          description: stream containing the desired event
+          required: true
+          schema:
+            type: string
+        - name: revision
+          in: path
+          description: index number of the desired event, starting at zero for the first event
+          required: true
+          schema:
+            type: number
+      responses:
+        "200":
+          description: successful operation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Event"
+        "400":
+          description: Invalid status value
+components:
+  requestBodies:
+    Event:
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Event"
+      description: CloudEvents event
+      required: true
+  schemas:
+    Event:
+      $ref: "https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/formats/cloudevents.json"
+
