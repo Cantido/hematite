@@ -35,6 +35,8 @@ paths:
           description: The event was successfully appended to the stream
         "409":
           description: Expected revision did not match
+        "422":
+          description: The event is not in CloudEvents format
   /streams/{streamid}/events/{revision}:
     get:
       tags:
@@ -71,9 +73,16 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Event"
+          examples:
+            single:
+              $ref: "#/components/examples/EventJson"
       description: CloudEvents event
       required: true
   schemas:
     Event:
-      $ref: "https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/formats/cloudevents.json"
+      $ref: "https://raw.githubusercontent.com/cloudevents/spec/v1.0.2/cloudevents/formats/cloudevents.json"
+  examples:
+    EventJson:
+      value: {"specversion":"1.0","type":"com.github.pull_request.opened","source":"https://github.com/cloudevents/spec/pull","subject":"123","id":"A234-1234-1234","time":"2018-04-05T17:31:00Z","comexampleextension1":"value","comexampleothervalue":5,"datacontenttype":"text/xml","data":"<much wow=\"xml\"/>"}
+
 

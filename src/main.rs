@@ -1,5 +1,5 @@
 use actix::prelude::*;
-use actix_web::{get, guard, web, App, HttpRequest, HttpResponse, HttpServer, Responder};
+use actix_web::{get, guard, web, App, HttpRequest, HttpResponse, HttpServer, Responder, HttpResponseBuilder, error};
 use cloudevents::*;
 use data_encoding::BASE32_NOPAD;
 use hematite::db::{Append, AppendBatch, Database, DatabaseActor, ExpectedRevision, Fetch};
@@ -86,13 +86,13 @@ async fn get_event(state: web::Data<AppState>, stream: web::Path<(String, u64)>)
 
     if let Some(addr) = addr_option {
         match addr.send(Fetch(rownum)).await {
-            Ok(Ok(Some(event))) => return HttpResponse::Ok().json(event),
-            Ok(Ok(None)) => return HttpResponse::NotFound().json("Not Found"),
-            Ok(Err(_)) => return HttpResponse::InternalServerError().json("Internal Server Error"),
-            Err(_) => return HttpResponse::InternalServerError().json("Internal Server Error"),
+            Ok(Ok(Some(event))) => return apply_secure_headers(&mut HttpResponse::Ok()).json(event),
+            Ok(Ok(None)) => return apply_secure_headers(&mut HttpResponse::NotFound()).json("Not Found"),
+            Ok(Err(_)) => return apply_secure_headers(&mut HttpResponse::InternalServerError()).json("Internal Server Error"),
+            Err(_) => return apply_secure_headers(&mut HttpResponse::InternalServerError()).json("Internal Server Error"),
         }
     } else {
-        return HttpResponse::NotFound().json("Not Found");
+        return apply_secure_headers(&mut HttpResponse::NotFound()).json("Not Found");
     }
 }
 
@@ -123,7 +123,7 @@ async fn post_event(
         let revision_result = parse_expected_revision(revision_param.as_str());
 
         if revision_result.is_err() {
-            return HttpResponse::UnprocessableEntity().finish();
+            return apply_secure_headers(&mut HttpResponse::UnprocessableEntity()).finish();
         }
 
         revision_result.unwrap()
@@ -146,12 +146,12 @@ async fn post_event(
                 .url_for("stream_events_rownum", [stream_id, rownum.to_string()])
                 .unwrap()
                 .to_string();
-            return HttpResponse::Created()
+            return apply_secure_headers(&mut HttpResponse::Created())
                 .insert_header(("location", event_url))
                 .finish();
         }
-        Ok(Err(err)) => return HttpResponse::Conflict().body(err.to_string()),
-        Err(_) => return HttpResponse::InternalServerError().finish(),
+        Ok(Err(err)) => return apply_secure_headers(&mut HttpResponse::Conflict()).body(err.to_string()),
+        Err(_) => return apply_secure_headers(&mut HttpResponse::InternalServerError()).finish(),
     }
 }
 
@@ -170,6 +170,15 @@ fn parse_expected_revision(expected_revision: &str) -> Result<ExpectedRevision, 
     }
 }
 
+fn apply_secure_headers(http_builder: &mut HttpResponseBuilder) -> &mut HttpResponseBuilder {
+    http_builder
+        .insert_header(("Cache-Control", "no-store"))
+        .insert_header(("X-Content-Type-Options", "nosniff"))
+        .insert_header(("X-Frame-Options", "DENY"))
+        .insert_header(("X-XSS-Protection", "1; mode=block"))
+        .insert_header(("Content-Security-Policy", "frame-ancestors 'none'"))
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     log4rs::init_file("config/log4rs.yml", Default::default()).unwrap();
@@ -184,7 +193,11 @@ async fn main() -> std::io::Result<()> {
 
     let state = web::Data::new(AppState::new(streams_dir));
     HttpServer::new(move || {
-        App::new().app_data(state.clone()).service(hello).service(
+        let json_config = web::JsonConfig::default()
+            .error_handler(|err, _req| {
+                error::InternalError::from_response(err, HttpResponse::UnprocessableEntity().finish()).into()
+            });
+        App::new().app_data(state.clone()).app_data(json_config).service(hello).service(
             web::scope("/streams/{stream}")
                 .service(
                     web::resource("/events")
