@@ -1,12 +1,12 @@
-use actix::prelude::*;
-use actix_web::{get, guard, web, App, HttpRequest, HttpResponse, HttpServer, Responder, HttpResponseBuilder, error};
+use actix::Actor;
+use axum::{Router, routing::get, routing::post, response::{Response, IntoResponse}, http::{StatusCode, header::{CACHE_CONTROL, X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS, X_XSS_PROTECTION, CONTENT_SECURITY_POLICY, CONTENT_LOCATION}}, extract::{State, Path, Json, Request, Query}, middleware::{Next, self}};
 use cloudevents::*;
 use data_encoding::BASE32_NOPAD;
 use hematite::db::{Append, AppendBatch, Database, DatabaseActor, ExpectedRevision, Fetch};
 use log::info;
 use log4rs;
 use serde::Deserialize;
-use std::{collections::HashMap, env, fs, path::PathBuf, str, sync::RwLock};
+use std::{collections::HashMap, env, fs, path::PathBuf, str, sync::{RwLock, Arc}};
 
 type DbActorAddress = actix::Addr<DatabaseActor>;
 
@@ -74,25 +74,20 @@ impl AppState {
     }
 }
 
-#[get("/")]
-async fn hello() -> impl Responder {
-    HttpResponse::Ok().body("Hello world!")
-}
-
-async fn get_event(state: web::Data<AppState>, stream: web::Path<(String, u64)>) -> impl Responder {
-    let (stream_id, rownum) = stream.into_inner();
+async fn get_event(state: State<Arc<AppState>>, stream: Path<(String, u64)>) -> Response {
+    let (stream_id, rownum) = stream.0;
 
     let addr_option = state.get_stream_address(&stream_id);
 
     if let Some(addr) = addr_option {
         match addr.send(Fetch(rownum)).await {
-            Ok(Ok(Some(event))) => return apply_secure_headers(&mut HttpResponse::Ok()).json(event),
-            Ok(Ok(None)) => return apply_secure_headers(&mut HttpResponse::NotFound()).json("Not Found"),
-            Ok(Err(_)) => return apply_secure_headers(&mut HttpResponse::InternalServerError()).json("Internal Server Error"),
-            Err(_) => return apply_secure_headers(&mut HttpResponse::InternalServerError()).json("Internal Server Error"),
+            Ok(Ok(Some(event))) => return Json(event).into_response(),
+            Ok(Ok(None)) => return StatusCode::NOT_FOUND.into_response(),
+            Ok(Err(_)) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         }
     } else {
-        return apply_secure_headers(&mut HttpResponse::NotFound()).json("Not Found");
+        return StatusCode::NOT_FOUND.into_response();
     }
 }
 
@@ -109,49 +104,44 @@ enum PostEventPayload {
 }
 
 async fn post_event(
-    req: HttpRequest,
-    state: web::Data<AppState>,
-    stream: web::Path<String>,
-    payload: web::Json<PostEventPayload>,
-    query_params: web::Query<PostEventParams>,
-) -> HttpResponse {
+    state: State<Arc<AppState>>,
+    stream: Path<String>,
+    query_params: Query<PostEventParams>,
+    payload: Json<PostEventPayload>,
+) -> Response {
     let revision = {
-        let revision_param = query_params
-            .into_inner()
-            .expected_revision
-            .unwrap_or("any".to_string());
+        let default_revision = "any".to_owned();
+        let revision_param = query_params.expected_revision.clone().unwrap_or(default_revision);
         let revision_result = parse_expected_revision(revision_param.as_str());
 
         if revision_result.is_err() {
-            return apply_secure_headers(&mut HttpResponse::UnprocessableEntity()).finish();
+            return StatusCode::UNPROCESSABLE_ENTITY.into_response();
         }
 
         revision_result.unwrap()
     };
 
-    let stream_id = stream.into_inner();
+    let stream_id = stream.0;
 
     state.initialize_database(&stream_id);
 
     let addr = state.get_stream_address(&stream_id).unwrap();
 
-    let result = match payload.into_inner() {
+    let result = match payload.0 {
         PostEventPayload::Single(event) => addr.send(Append(event, revision)).await,
         PostEventPayload::Batch(events) => addr.send(AppendBatch(events, revision)).await,
     };
 
     match result {
         Ok(Ok(rownum)) => {
-            let event_url = req
-                .url_for("stream_events_rownum", [stream_id, rownum.to_string()])
-                .unwrap()
-                .to_string();
-            return apply_secure_headers(&mut HttpResponse::Created())
-                .insert_header(("location", event_url))
-                .finish();
+            let event_url = format!("http://localhost:8080/streams/{}/events/{}", stream_id, rownum);
+            let mut resp = StatusCode::CREATED.into_response();
+            let headers = resp.headers_mut();
+            headers.insert(CONTENT_LOCATION, event_url.parse().unwrap());
+            return resp;
         }
-        Ok(Err(err)) => return apply_secure_headers(&mut HttpResponse::Conflict()).body(err.to_string()),
-        Err(_) => return apply_secure_headers(&mut HttpResponse::InternalServerError()).finish(),
+        Ok(Err(_err)) => return StatusCode::CONFLICT.into_response(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 
@@ -170,17 +160,21 @@ fn parse_expected_revision(expected_revision: &str) -> Result<ExpectedRevision, 
     }
 }
 
-fn apply_secure_headers(http_builder: &mut HttpResponseBuilder) -> &mut HttpResponseBuilder {
-    http_builder
-        .insert_header(("Cache-Control", "no-store"))
-        .insert_header(("X-Content-Type-Options", "nosniff"))
-        .insert_header(("X-Frame-Options", "DENY"))
-        .insert_header(("X-XSS-Protection", "1; mode=block"))
-        .insert_header(("Content-Security-Policy", "frame-ancestors 'none'"))
+async fn apply_secure_headers(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+
+    let headers = response.headers_mut();
+    headers.insert(CACHE_CONTROL, "no-store".parse().unwrap());
+    headers.insert(X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
+    headers.insert(X_FRAME_OPTIONS, "DENY".parse().unwrap());
+    headers.insert(X_XSS_PROTECTION, "1; mode=block".parse().unwrap());
+    headers.insert(CONTENT_SECURITY_POLICY, "frame-ancestors 'none'".parse().unwrap());
+
+    return response;
 }
 
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
+#[tokio::main]
+async fn main() {
     log4rs::init_file("config/log4rs.yml", Default::default()).unwrap();
 
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
@@ -191,28 +185,15 @@ async fn main() -> std::io::Result<()> {
     info!("Starting Hematite DB version {}", VERSION);
     info!("Stream database directory: {}", streams_dir.display());
 
-    let state = web::Data::new(AppState::new(streams_dir));
-    HttpServer::new(move || {
-        let json_config = web::JsonConfig::default()
-            .error_handler(|err, _req| {
-                error::InternalError::from_response(err, HttpResponse::UnprocessableEntity().finish()).into()
-            });
-        App::new().app_data(state.clone()).app_data(json_config).service(hello).service(
-            web::scope("/streams/{stream}")
-                .service(
-                    web::resource("/events")
-                        .name("stream_events")
-                        .guard(guard::Header("content-type", "application/json"))
-                        .route(web::post().to(post_event)),
-                )
-                .service(
-                    web::resource("/events/{rownum}")
-                        .name("stream_events_rownum")
-                        .route(web::get().to(get_event)),
-                ),
-        )
-    })
-    .bind(("127.0.0.1", 8080))?
-    .run()
-    .await
+    let state = Arc::new(AppState::new(streams_dir));
+
+    let app = Router::new()
+        .layer(middleware::from_fn(apply_secure_headers))
+        .route("/streams/:stream/events/:rownum", get(get_event))
+        .route("/streams/:stream/events", post(post_event))
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
+
+    axum::serve(listener, app).await.unwrap();
 }

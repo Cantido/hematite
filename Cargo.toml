@@ -7,8 +7,8 @@ edition = "2021"
 
 [dependencies]
 actix = "0.13"
-actix-web = "4"
 anyhow = "1.0.70"
+axum = { version = "0.7.2", features = ["http1", "http2", "tokio"] }
 cloudevents-sdk = "0.7.0"
 data-encoding = "2.4.0"
 log = "0.4.19"
@@ -17,6 +17,7 @@ rand = "0.8.5"
 serde = "1.0.171"
 serde_json = "1.0.95"
 time = "0.3.20"
+tokio = { version = "1.29.1", features = ["macros", "rt-multi-thread"] }
 
 [dev-dependencies]
 criterion = { version = "0.4", features = ["html_reports"] }
