@@ -10,7 +10,7 @@ fn write_bench(c: &mut Criterion) {
     let mut db = Database::new(&PathBuf::from("stream.db")).expect("Could not intialize DB");
 
     c.bench_function("write event", |b| {
-        b.iter(|| db.insert(black_box(&mut Event::default()), ExpectedRevision::Any))
+        b.iter(|| db.insert(Event::default(), ExpectedRevision::Any))
     });
 
     let _ = std::fs::remove_file("stream.db");
