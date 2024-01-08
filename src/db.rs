@@ -2,7 +2,6 @@ use actix::prelude::*;
 use anyhow::{bail, Result};
 use cloudevents::event::Event;
 use cloudevents::*;
-use data_encoding::BASE64_NOPAD;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::prelude::*;
@@ -195,23 +194,16 @@ impl Database {
 
 fn encode_event(event: &Event) -> Result<Vec<u8>> {
     let json = serde_json::to_string(&event)?;
-    let encoded: String = BASE64_NOPAD.encode(json.as_bytes());
 
     let mut row = Vec::new();
-    write!(&mut row, "{}\n", encoded)?;
+    write!(&mut row, "{}\n", json)?;
     Ok(row)
 }
 
 fn decode_event(row: String) -> Event {
-    let trimmed_b64 = row.trim_end();
-    let json_bytes = BASE64_NOPAD
-        .decode(trimmed_b64.as_bytes())
-        .expect("Expected row to be decodable from base64");
-    let json = String::from_utf8(json_bytes).expect("Expected row to be valid UTF8");
+    let json = row.trim_end();
 
-    let event: Event =
-        serde_json::from_str(&json).expect("Expected row to be deserializable to json");
-    event
+    serde_json::from_str(&json).expect("Expected row to be deserializable to json")
 }
 
 #[cfg(test)]
