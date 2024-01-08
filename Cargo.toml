@@ -7,10 +7,12 @@ edition = "2021"
 
 [dependencies]
 actix = "0.13"
+actix-web = "4.4.1"
 anyhow = "1.0.70"
 axum = { version = "0.7.2", features = ["http1", "http2", "tokio"] }
 cloudevents-sdk = "0.7.0"
 data-encoding = "2.4.0"
+jsonwebtoken = "9.2.0"
 log = "0.4.19"
 log4rs = "1.2.0"
 rand = "0.8.5"

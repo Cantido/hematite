@@ -1,5 +1,5 @@
 use actix::Actor;
-use axum::{Router, routing::get, routing::post, response::{Response, IntoResponse}, http::{StatusCode, header::{CACHE_CONTROL, X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS, X_XSS_PROTECTION, CONTENT_SECURITY_POLICY, CONTENT_LOCATION}}, extract::{State, Path, Json, Request, Query}, middleware::{Next, self}};
+use axum::{async_trait, Router, routing::get, routing::post, response::{Response, IntoResponse}, http::{StatusCode, request::Parts, header::{AUTHORIZATION, CACHE_CONTROL, X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS, X_XSS_PROTECTION, CONTENT_SECURITY_POLICY, CONTENT_LOCATION}}, extract::{FromRequestParts, State, Path, Json, Request, Query}, middleware::{Next, self}};
 use cloudevents::*;
 use data_encoding::BASE32_NOPAD;
 use hematite::db::{Append, AppendBatch, Database, DatabaseActor, ExpectedRevision, Fetch};
@@ -7,6 +7,7 @@ use log::info;
 use log4rs;
 use serde::Deserialize;
 use std::{collections::HashMap, env, fs, path::PathBuf, str, sync::{RwLock, Arc}};
+use jsonwebtoken::{decode, DecodingKey, Validation};
 
 type DbActorAddress = actix::Addr<DatabaseActor>;
 
@@ -74,7 +75,7 @@ impl AppState {
     }
 }
 
-async fn get_event(state: State<Arc<AppState>>, stream: Path<(String, u64)>) -> Response {
+async fn get_event(state: State<Arc<AppState>>, _claims: Claims, stream: Path<(String, u64)>) -> Response {
     let (stream_id, rownum) = stream.0;
 
     let addr_option = state.get_stream_address(&stream_id);
@@ -88,6 +89,41 @@ async fn get_event(state: State<Arc<AppState>>, stream: Path<(String, u64)>) -> 
         }
     } else {
         return StatusCode::NOT_FOUND.into_response();
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct Claims {
+    sub: String,
+    aud: String,
+}
+
+#[async_trait]
+impl<S> FromRequestParts<S> for Claims
+where
+    S: Send + Sync,
+{
+    type Rejection = (StatusCode, &'static str);
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        if let Some(auth_header) = parts.headers.get(AUTHORIZATION) {
+            let jwt_result = auth_header.to_str().unwrap().strip_prefix("Bearer ");
+
+            if jwt_result.is_some() {
+                let jwt = jwt_result.unwrap();
+                let secret = std::env::var("HEMATITE_JWT_SECRET").expect("Env var HEMATITE_JWT_SECRET is required.");
+
+                let mut validation = Validation::default();
+                validation.set_audience(&["hematite"]);
+
+                let token_result = decode::<Claims>(&jwt, &DecodingKey::from_secret(&secret.into_bytes()), &validation);
+
+                if let Ok(token) = token_result {
+                    return Ok(token.claims)
+                }
+            }
+        }
+        return Err((StatusCode::UNAUTHORIZED, "Bearer token is missing or invalid"))
     }
 }
 
@@ -105,6 +141,7 @@ enum PostEventPayload {
 
 async fn post_event(
     state: State<Arc<AppState>>,
+    _claims: Claims,
     stream: Path<String>,
     query_params: Query<PostEventParams>,
     payload: Json<PostEventPayload>,
@@ -173,7 +210,7 @@ async fn apply_secure_headers(request: Request, next: Next) -> Response {
     return response;
 }
 
-#[tokio::main]
+#[actix_web::main]
 async fn main() {
     log4rs::init_file("config/log4rs.yml", Default::default()).unwrap();
 
@@ -188,9 +225,9 @@ async fn main() {
     let state = Arc::new(AppState::new(streams_dir));
 
     let app = Router::new()
-        .layer(middleware::from_fn(apply_secure_headers))
         .route("/streams/:stream/events/:rownum", get(get_event))
         .route("/streams/:stream/events", post(post_event))
+        .layer(middleware::from_fn(apply_secure_headers))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
