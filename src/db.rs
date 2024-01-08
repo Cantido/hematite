@@ -133,7 +133,7 @@ impl Database {
 
         if revision_match {
             self.write_event(event)?;
-            Ok(self.primary_index.last_key_value().unwrap().1.clone())
+            Ok(self.primary_index.last_key_value().unwrap().0.clone())
         } else {
             bail!("revision mismatch");
         }
@@ -159,7 +159,7 @@ impl Database {
             for event in events.iter() {
                 self.write_event(event.clone())?;
             }
-            Ok(self.primary_index.last_key_value().unwrap().1.clone())
+            Ok(self.primary_index.last_key_value().unwrap().0.clone())
         } else {
             bail!("revision mismatch");
         }
@@ -249,7 +249,7 @@ mod tests {
 
         let event = Event::default();
 
-        db.insert(event.clone(), ExpectedRevision::Any)
+        let rownum = db.insert(event.clone(), ExpectedRevision::Any)
             .expect("Could not write to the DB");
 
         let result: Event = db
@@ -257,6 +257,7 @@ mod tests {
             .expect("Row not found")
             .expect("Failed to read row");
 
+        assert_eq!(rownum, 0);
         assert_eq!(result.id(), event.id());
     }
 
@@ -269,8 +270,11 @@ mod tests {
 
         let event = Event::default();
 
-        db.insert(event.clone(), ExpectedRevision::Any)
+        let rownum =
+            db.insert(event.clone(), ExpectedRevision::Any)
             .expect("Could not write to the DB");
+
+        assert_eq!(rownum, 0);
         assert!(db.insert(event.clone(), ExpectedRevision::Any).is_err());
     }
 
@@ -361,17 +365,23 @@ mod tests {
 
         let event = Event::default();
 
-        for _n in 0..100 {
-            db.insert(Event::default(), ExpectedRevision::Any)
+        for n in 0..100 {
+            let rownum =
+                db.insert(Event::default(), ExpectedRevision::Any)
                 .expect("Could not write to the DB");
+
+            assert_eq!(rownum, n);
         }
 
         db.insert(event.clone(), ExpectedRevision::Any)
             .expect("Could not write to the DB");
 
-        for _n in 0..100 {
-            db.insert(Event::default(), ExpectedRevision::Any)
+        for n in 0..100 {
+            let rownum =
+                db.insert(Event::default(), ExpectedRevision::Any)
                 .expect("Could not write to the DB");
+
+            assert_eq!(rownum, n + 101);
         }
 
         let result: Event = db
