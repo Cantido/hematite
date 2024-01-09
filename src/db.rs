@@ -21,6 +21,10 @@ impl Actor for DatabaseActor {
 pub struct Fetch(pub u64);
 
 #[derive(Message)]
+#[rtype(result = "Result<Vec<Event>>")]
+pub struct FetchMany(pub u64, pub u64);
+
+#[derive(Message)]
 #[rtype(result = "Result<u64>")]
 pub struct Append(pub Event, pub ExpectedRevision);
 
@@ -33,6 +37,14 @@ impl Handler<Fetch> for DatabaseActor {
 
     fn handle(&mut self, msg: Fetch, _ctx: &mut Context<Self>) -> Self::Result {
         self.database.query(msg.0)
+    }
+}
+
+impl Handler<FetchMany> for DatabaseActor {
+    type Result = Result<Vec<Event>>;
+
+    fn handle(&mut self, msg: FetchMany, _ctx: &mut Context<Self>) -> Self::Result {
+        self.database.query_many(msg.0, msg.1)
     }
 }
 
@@ -117,6 +129,26 @@ impl Database {
             .transpose()
             .map(|r| r.map(decode_event))
             .map_err(|e| e.into())
+    }
+
+    pub fn query_many(&mut self, start: u64, limit: u64) -> Result<Vec<Event>> {
+        let row_offset = match self.primary_index.get(&start) {
+            Some(row_offset) => row_offset,
+            None => return Ok(vec![]),
+        };
+        let _position = self
+            .file
+            .seek(io::SeekFrom::Start(*row_offset))
+            .expect("Cannot seek to rownum's row");
+
+        let mut events = vec![];
+
+        for line in io::BufReader::new(&self.file).lines().take(limit.try_into().unwrap()) {
+            let event = decode_event(line?);
+            events.push(event);
+        }
+
+        Ok(events)
     }
 
     pub fn insert(&mut self, event: Event, expected_revision: ExpectedRevision) -> Result<u64> {

@@ -2,7 +2,7 @@ use actix::Actor;
 use axum::{async_trait, Router, routing::get, routing::post, response::{Response, IntoResponse}, http::{StatusCode, request::Parts, header::{AUTHORIZATION, CACHE_CONTROL, X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS, X_XSS_PROTECTION, CONTENT_SECURITY_POLICY, CONTENT_LOCATION}}, extract::{FromRequestParts, State, Path, Json, Request, Query}, middleware::{Next, self}};
 use cloudevents::*;
 use data_encoding::BASE32_NOPAD;
-use hematite::db::{Append, AppendBatch, Database, DatabaseActor, ExpectedRevision, Fetch};
+use hematite::db::{Append, AppendBatch, Database, DatabaseActor, ExpectedRevision, Fetch, FetchMany};
 use log::info;
 use log4rs;
 use serde::Deserialize;
@@ -118,6 +118,26 @@ async fn get_event(state: State<Arc<AppState>>, claims: Claims, stream: Path<(St
         match addr.send(Fetch(rownum)).await {
             Ok(Ok(Some(event))) => return Json(event).into_response(),
             Ok(Ok(None)) => return StatusCode::NOT_FOUND.into_response(),
+            Ok(Err(_)) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        }
+    } else {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+}
+
+async fn get_event_index(state: State<Arc<AppState>>, claims: Claims, stream:Path<String>, query: Query<HashMap<String, String>>) -> Response {
+    let user_id = claims.sub;
+    let stream_id = stream.0;
+
+    let start = query.0.get("start").unwrap_or(&"0".to_string()).parse().unwrap_or(0).min(0);
+    let limit = query.0.get("start").unwrap_or(&"0".to_string()).parse().unwrap_or(50).max(1000);
+
+    let addr_option = state.get_stream_address(&user_id, &stream_id);
+
+    if let Some(addr) = addr_option {
+        match addr.send(FetchMany(start, limit)).await {
+            Ok(Ok(events)) => return Json(events).into_response(),
             Ok(Err(_)) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
             Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         }
@@ -260,7 +280,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/streams/:stream/events/:rownum", get(get_event))
-        .route("/streams/:stream/events", post(post_event))
+        .route("/streams/:stream/events", post(post_event).get(get_event_index))
         .layer(middleware::from_fn(apply_secure_headers))
         .with_state(state);
 
