@@ -244,7 +244,7 @@ async fn apply_secure_headers(request: Request, next: Next) -> Response {
     return response;
 }
 
-#[actix_web::main]
+#[actix::main]
 async fn main() {
     log4rs::init_file("config/log4rs.yml", Default::default()).unwrap();
 
