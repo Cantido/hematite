@@ -11,9 +11,12 @@ use jsonwebtoken::{decode, DecodingKey, Validation};
 
 type DbActorAddress = actix::Addr<DatabaseActor>;
 
+type UserMap = HashMap<String, StreamMap>;
+type StreamMap = HashMap<String, DbActorAddress>;
+
 struct AppState {
     streams_path: PathBuf,
-    streams: RwLock<HashMap<String, DbActorAddress>>,
+    streams: RwLock<UserMap>,
 }
 
 impl AppState {
@@ -23,31 +26,58 @@ impl AppState {
             streams: RwLock::new(HashMap::new()),
         };
 
-        for entry in state
+        for user_dir_result in state
             .streams_path
             .read_dir()
             .expect("Couldn't read stream directory")
         {
-            if let Ok(file) = entry {
-                let filepath = file.path();
-                let encoded_stream_id = filepath.file_stem().unwrap().to_str();
-                let stream_id_bytes = BASE32_NOPAD
-                    .decode(encoded_stream_id.unwrap().as_bytes())
-                    .expect("Expected file in stream dir to have a Base32 no-pad encoded filename");
-                let stream_id = str::from_utf8(stream_id_bytes.as_slice()).unwrap();
+            if let Ok(user_dir) = user_dir_result {
+                let user_path = user_dir.path();
+                let user_id = user_path.file_stem().unwrap().to_str().unwrap();
 
-                info!("Initializing stream {}", &stream_id);
+                for db_file_result in user_dir
+                    .path()
+                    .read_dir()
+                    .expect("Couldn't read user directory")
+                {
+                    if let Ok(db_file) = db_file_result {
+                        let filepath = db_file.path();
+                        let encoded_stream_id = filepath.file_stem().unwrap().to_str();
+                        let stream_id_bytes = BASE32_NOPAD
+                            .decode(encoded_stream_id.unwrap().as_bytes())
+                            .expect("Expected file in stream dir to have a Base32 no-pad encoded filename");
+                        let stream_id = str::from_utf8(stream_id_bytes.as_slice()).unwrap();
 
-                state.initialize_database(&stream_id);
+                        info!("Initializing stream {}", &stream_id);
+
+                        state.initialize_database(&user_id, &stream_id);
+                    }
+                }
             }
         }
 
         state
     }
 
-    fn initialize_database(&self, stream_id: &str) {
+    fn initialize_database(&self, user_id: &str, stream_id: &str) {
+        let init_user = {
+            let users = self.streams.read().unwrap();
+
+            !users.contains_key(user_id)
+        };
+
+        if init_user {
+            let mut path = self.streams_path.clone();
+            path.push(user_id);
+            fs::create_dir_all(path).expect("Could not create user directory");
+
+            let mut users = self.streams.write().unwrap();
+            users.insert(user_id.to_string(), HashMap::new());
+        }
+
         let init_db = {
-            let streams = self.streams.read().unwrap();
+            let users = self.streams.read().unwrap();
+            let streams = users.get(user_id).unwrap();
 
             !streams.contains_key(stream_id)
         };
@@ -56,6 +86,7 @@ impl AppState {
             let stream_file_name: String = BASE32_NOPAD.encode(stream_id.as_bytes());
 
             let mut path = self.streams_path.clone();
+            path.push(user_id);
             path.push(stream_file_name);
             path.set_extension("hemadb");
 
@@ -63,22 +94,25 @@ impl AppState {
             let addr = DatabaseActor { database: db }.start();
 
             let mut streams_mut = self.streams.write().unwrap();
-            streams_mut.insert(stream_id.to_owned(), addr);
+            let stream_map = streams_mut.get_mut(user_id).unwrap();
+            stream_map.insert(stream_id.to_owned(), addr);
         }
     }
 
-    fn get_stream_address(&self, stream_id: &str) -> Option<DbActorAddress> {
-        let streams = self.streams.read().unwrap();
-        let addr = streams.get(stream_id);
+    fn get_stream_address(&self, user_id: &str, stream_id: &str) -> Option<DbActorAddress> {
+        let users = self.streams.read().unwrap();
+        let user_streams = users.get(user_id)?;
+        let addr = user_streams.get(stream_id);
 
         addr.map(|a| a.to_owned())
     }
 }
 
-async fn get_event(state: State<Arc<AppState>>, _claims: Claims, stream: Path<(String, u64)>) -> Response {
+async fn get_event(state: State<Arc<AppState>>, claims: Claims, stream: Path<(String, u64)>) -> Response {
+    let user_id = claims.sub;
     let (stream_id, rownum) = stream.0;
 
-    let addr_option = state.get_stream_address(&stream_id);
+    let addr_option = state.get_stream_address(&user_id, &stream_id);
 
     if let Some(addr) = addr_option {
         match addr.send(Fetch(rownum)).await {
@@ -95,7 +129,6 @@ async fn get_event(state: State<Arc<AppState>>, _claims: Claims, stream: Path<(S
 #[derive(Debug, Deserialize)]
 struct Claims {
     sub: String,
-    aud: String,
 }
 
 #[async_trait]
@@ -141,7 +174,7 @@ enum PostEventPayload {
 
 async fn post_event(
     state: State<Arc<AppState>>,
-    _claims: Claims,
+    claims: Claims,
     stream: Path<String>,
     query_params: Query<PostEventParams>,
     payload: Json<PostEventPayload>,
@@ -158,11 +191,12 @@ async fn post_event(
         revision_result.unwrap()
     };
 
+    let user_id = claims.sub;
     let stream_id = stream.0;
 
-    state.initialize_database(&stream_id);
+    state.initialize_database(&user_id, &stream_id);
 
-    let addr = state.get_stream_address(&stream_id).unwrap();
+    let addr = state.get_stream_address(&user_id, &stream_id).unwrap();
 
     let result = match payload.0 {
         PostEventPayload::Single(event) => addr.send(Append(event, revision)).await,
