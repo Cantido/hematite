@@ -87,7 +87,7 @@ impl AppState {
             path.push(stream_file_name);
             path.set_extension("hemadb");
 
-            let db = Database::new(&path).unwrap();
+            let db = Database::new(&path).expect("Failed to initialize database");
 
             let mut streams_mut = self.streams.write().unwrap();
             let stream_map = streams_mut.get_mut(user_id).unwrap();
