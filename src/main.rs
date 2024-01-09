@@ -130,8 +130,8 @@ async fn get_event_index(state: State<Arc<AppState>>, claims: Claims, stream:Pat
     let user_id = claims.sub;
     let stream_id = stream.0;
 
-    let start = query.0.get("start").unwrap_or(&"0".to_string()).parse().unwrap_or(0).min(0);
-    let limit = query.0.get("start").unwrap_or(&"0".to_string()).parse().unwrap_or(50).max(1000);
+    let start = query.0.get("start").unwrap_or(&"0".to_string()).parse().unwrap_or(0).max(0);
+    let limit = query.0.get("limit").unwrap_or(&"50".to_string()).parse().unwrap_or(50).min(1000);
 
     let addr_option = state.get_stream_address(&user_id, &stream_id);
 
