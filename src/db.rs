@@ -1,4 +1,3 @@
-use actix::prelude::*;
 use anyhow::{bail, Result};
 use cloudevents::event::Event;
 use cloudevents::*;
@@ -7,62 +6,6 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::io::{self, BufRead};
 use std::path::Path;
-
-pub struct DatabaseActor {
-    pub database: Database,
-}
-
-impl Actor for DatabaseActor {
-    type Context = Context<Self>;
-}
-
-#[derive(Message)]
-#[rtype(result = "Result<Option<Event>>")]
-pub struct Fetch(pub u64);
-
-#[derive(Message)]
-#[rtype(result = "Result<Vec<Event>>")]
-pub struct FetchMany(pub u64, pub u64);
-
-#[derive(Message)]
-#[rtype(result = "Result<u64>")]
-pub struct Append(pub Event, pub ExpectedRevision);
-
-#[derive(Message)]
-#[rtype(result = "Result<u64>")]
-pub struct AppendBatch(pub Vec<Event>, pub ExpectedRevision);
-
-impl Handler<Fetch> for DatabaseActor {
-    type Result = Result<Option<Event>>;
-
-    fn handle(&mut self, msg: Fetch, _ctx: &mut Context<Self>) -> Self::Result {
-        self.database.query(msg.0)
-    }
-}
-
-impl Handler<FetchMany> for DatabaseActor {
-    type Result = Result<Vec<Event>>;
-
-    fn handle(&mut self, msg: FetchMany, _ctx: &mut Context<Self>) -> Self::Result {
-        self.database.query_many(msg.0, msg.1)
-    }
-}
-
-impl Handler<Append> for DatabaseActor {
-    type Result = Result<u64>;
-
-    fn handle(&mut self, msg: Append, _ctx: &mut Context<Self>) -> Self::Result {
-        self.database.insert(msg.0, msg.1)
-    }
-}
-
-impl Handler<AppendBatch> for DatabaseActor {
-    type Result = Result<u64>;
-
-    fn handle(&mut self, msg: AppendBatch, _ctx: &mut Context<Self>) -> Self::Result {
-        self.database.insert_batch(msg.0, msg.1)
-    }
-}
 
 #[derive(Default)]
 pub enum ExpectedRevision {

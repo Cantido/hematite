@@ -6,7 +6,6 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-actix = "0.13"
 anyhow = "1.0.70"
 axum = { version = "0.7.2", features = ["http1", "http2", "tokio"] }
 cloudevents-sdk = "0.7.0"

@@ -1,18 +1,15 @@
-use actix::Actor;
 use axum::{async_trait, Router, routing::get, routing::post, response::{Response, IntoResponse}, http::{StatusCode, request::Parts, header::{AUTHORIZATION, CACHE_CONTROL, X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS, X_XSS_PROTECTION, CONTENT_SECURITY_POLICY, CONTENT_LOCATION}}, extract::{FromRequestParts, State, Path, Json, Request, Query}, middleware::{Next, self}};
 use cloudevents::*;
 use data_encoding::BASE32_NOPAD;
-use hematite::db::{Append, AppendBatch, Database, DatabaseActor, ExpectedRevision, Fetch, FetchMany};
+use hematite::db::{Database, ExpectedRevision};
 use log::info;
 use log4rs;
 use serde::Deserialize;
-use std::{collections::HashMap, env, fs, path::PathBuf, str, sync::{RwLock, Arc}};
+use std::{collections::HashMap, env, fs, path::PathBuf, str, sync::{RwLock, Arc, Mutex}};
 use jsonwebtoken::{decode, DecodingKey, Validation};
 
-type DbActorAddress = actix::Addr<DatabaseActor>;
-
 type UserMap = HashMap<String, StreamMap>;
-type StreamMap = HashMap<String, DbActorAddress>;
+type StreamMap = HashMap<String, Mutex<Database>>;
 
 struct AppState {
     streams_path: PathBuf,
@@ -91,38 +88,73 @@ impl AppState {
             path.set_extension("hemadb");
 
             let db = Database::new(&path).unwrap();
-            let addr = DatabaseActor { database: db }.start();
 
             let mut streams_mut = self.streams.write().unwrap();
             let stream_map = streams_mut.get_mut(user_id).unwrap();
-            stream_map.insert(stream_id.to_owned(), addr);
+            stream_map.insert(stream_id.to_owned(), Mutex::new(db));
         }
     }
 
-    fn get_stream_address(&self, user_id: &str, stream_id: &str) -> Option<DbActorAddress> {
+    fn get_event(&self, user_id: &str, stream_id: &str, rownum: u64) -> anyhow::Result<Option<Event>> {
         let users = self.streams.read().unwrap();
-        let user_streams = users.get(user_id)?;
-        let addr = user_streams.get(stream_id);
+        let user_streams = users.get(user_id).unwrap();
+        let db_option = user_streams.get(stream_id);
 
-        addr.map(|a| a.to_owned())
+        if let Some(db) = db_option {
+            db.lock().unwrap().query(rownum)
+        } else {
+            Ok(None)
+        }
     }
+
+    fn get_event_many(&self, user_id: &str, stream_id: &str, start: u64, limit: u64) -> anyhow::Result<Vec<Event>> {
+        let users = self.streams.read().unwrap();
+        let user_streams = users.get(user_id).unwrap();
+        let db_option = user_streams.get(stream_id);
+
+        if let Some(db) = db_option {
+            db.lock().unwrap().query_many(start, limit)
+        } else {
+            Ok(vec![])
+        }
+    }
+
+    fn insert_event(&self, user_id: &str, stream_id: &str, event: Event, revision: ExpectedRevision) -> anyhow::Result<u64> {
+        let users = self.streams.read().unwrap();
+        let user_streams = users.get(user_id).unwrap();
+        let db_option = user_streams.get(stream_id);
+
+        if let Some(db) = db_option {
+            db.lock().unwrap().insert(event, revision)
+        } else {
+            anyhow::bail!("stream not found")
+        }
+    }
+
+    fn insert_event_many(&self, user_id: &str, stream_id: &str, events: Vec<Event>, revision: ExpectedRevision) -> anyhow::Result<u64> {
+        let users = self.streams.read().unwrap();
+        let user_streams = users.get(user_id).unwrap();
+        let db_option = user_streams.get(stream_id);
+
+        if let Some(db) = db_option {
+            db.lock().unwrap().insert_batch(events, revision)
+        } else {
+            anyhow::bail!("stream not found")
+        }
+    }
+
 }
 
 async fn get_event(state: State<Arc<AppState>>, claims: Claims, stream: Path<(String, u64)>) -> Response {
     let user_id = claims.sub;
     let (stream_id, rownum) = stream.0;
 
-    let addr_option = state.get_stream_address(&user_id, &stream_id);
+    let event_result = state.get_event(&user_id, &stream_id, rownum);
 
-    if let Some(addr) = addr_option {
-        match addr.send(Fetch(rownum)).await {
-            Ok(Ok(Some(event))) => return Json(event).into_response(),
-            Ok(Ok(None)) => return StatusCode::NOT_FOUND.into_response(),
-            Ok(Err(_)) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-        }
-    } else {
-        return StatusCode::NOT_FOUND.into_response();
+    match event_result {
+        Ok(Some(event)) => return Json(event).into_response(),
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 
@@ -133,16 +165,11 @@ async fn get_event_index(state: State<Arc<AppState>>, claims: Claims, stream:Pat
     let start = query.0.get("start").unwrap_or(&"0".to_string()).parse().unwrap_or(0).max(0);
     let limit = query.0.get("limit").unwrap_or(&"50".to_string()).parse().unwrap_or(50).min(1000);
 
-    let addr_option = state.get_stream_address(&user_id, &stream_id);
+    let events_result = state.get_event_many(&user_id, &stream_id, start, limit);
 
-    if let Some(addr) = addr_option {
-        match addr.send(FetchMany(start, limit)).await {
-            Ok(Ok(events)) => return Json(events).into_response(),
-            Ok(Err(_)) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-        }
-    } else {
-        return StatusCode::NOT_FOUND.into_response();
+    match events_result {
+        Ok(events) => return Json(events).into_response(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 
@@ -216,23 +243,20 @@ async fn post_event(
 
     state.initialize_database(&user_id, &stream_id);
 
-    let addr = state.get_stream_address(&user_id, &stream_id).unwrap();
-
     let result = match payload.0 {
-        PostEventPayload::Single(event) => addr.send(Append(event, revision)).await,
-        PostEventPayload::Batch(events) => addr.send(AppendBatch(events, revision)).await,
+        PostEventPayload::Single(event) => state.insert_event(&user_id, &stream_id, event, revision),
+        PostEventPayload::Batch(events) => state.insert_event_many(&user_id, &stream_id, events, revision),
     };
 
     match result {
-        Ok(Ok(rownum)) => {
+        Ok(rownum) => {
             let event_url = format!("http://localhost:8080/streams/{}/events/{}", stream_id, rownum);
             let mut resp = StatusCode::CREATED.into_response();
             let headers = resp.headers_mut();
             headers.insert(CONTENT_LOCATION, event_url.parse().unwrap());
             return resp;
         }
-        Ok(Err(_err)) => return StatusCode::CONFLICT.into_response(),
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(_err) => return StatusCode::CONFLICT.into_response(),
     }
 }
 
@@ -264,7 +288,7 @@ async fn apply_secure_headers(request: Request, next: Next) -> Response {
     return response;
 }
 
-#[actix::main]
+#[tokio::main]
 async fn main() {
     log4rs::init_file("config/log4rs.yml", Default::default()).unwrap();
 
