@@ -6,6 +6,7 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::io::{self, BufRead};
 use std::path::Path;
+use std::path::PathBuf;
 
 #[derive(Default)]
 pub enum ExpectedRevision {
@@ -17,7 +18,7 @@ pub enum ExpectedRevision {
 }
 
 pub struct Database {
-    file: File,
+    path: PathBuf,
     primary_index: BTreeMap<u64, u64>,
     source_id_index: BTreeMap<(String, String), u64>,
 }
@@ -50,23 +51,28 @@ impl Database {
         }
 
         Ok(Database {
-            file,
+            path: path.to_path_buf(),
             primary_index,
             source_id_index,
         })
     }
 
     pub fn query(&mut self, rownum: u64) -> Result<Option<Event>> {
+        let mut file = File::options()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(&self.path)?;
+
         let row_offset = match self.primary_index.get(&rownum) {
             Some(row_offset) => row_offset,
             None => return Ok(None),
         };
-        let _position = self
-            .file
+        let _position = file
             .seek(io::SeekFrom::Start(*row_offset))
             .expect("Cannot seek to rownum's row");
 
-        io::BufReader::new(&self.file)
+        io::BufReader::new(&file)
             .lines()
             .next()
             .transpose()
@@ -75,18 +81,23 @@ impl Database {
     }
 
     pub fn query_many(&mut self, start: u64, limit: u64) -> Result<Vec<Event>> {
+        let mut file = File::options()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(&self.path)?;
+
         let row_offset = match self.primary_index.get(&start) {
             Some(row_offset) => row_offset,
             None => return Ok(vec![]),
         };
-        let _position = self
-            .file
+        let _position = file
             .seek(io::SeekFrom::Start(*row_offset))
             .expect("Cannot seek to rownum's row");
 
         let mut events = vec![];
 
-        for line in io::BufReader::new(&self.file).lines().take(limit.try_into().unwrap()) {
+        for line in io::BufReader::new(&file).lines().take(limit.try_into().unwrap()) {
             let event = decode_event(line?);
             events.push(event);
         }
@@ -147,15 +158,22 @@ impl Database {
         {
             bail!("Event with that source and ID value already exists in this stream");
         }
-        let position = self.file.seek(io::SeekFrom::End(0))?;
+
+        let mut file = File::options()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(&self.path)?;
+
+        let position = file.seek(io::SeekFrom::End(0))?;
+
+        let encoded = encode_event(&event)?;
+        file.write_all(&encoded)?;
 
         let (event_rownum, event_offset) = match self.primary_index.last_key_value() {
             None => (0, 0),
             Some((last_rownum, _offset)) => (last_rownum + 1, position),
         };
-
-        let encoded = encode_event(&event)?;
-        self.file.write_all(&encoded)?;
 
         self.primary_index.insert(event_rownum, event_offset);
         self.source_id_index.insert(
