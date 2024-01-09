@@ -4,9 +4,21 @@ use data_encoding::BASE32_NOPAD;
 use hematite::db::{Database, ExpectedRevision};
 use log::info;
 use log4rs;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, env, fs, path::PathBuf, str, sync::{RwLock, Arc, Mutex}};
 use jsonwebtoken::{decode, DecodingKey, Validation};
+
+#[derive(Serialize)]
+enum HealthStatus {
+    Pass,
+    Fail,
+    Warn,
+}
+
+#[derive(Serialize)]
+struct ApiHealth {
+    status: HealthStatus,
+}
 
 type UserMap = HashMap<String, StreamMap>;
 type StreamMap = HashMap<String, Mutex<Database>>;
@@ -54,6 +66,10 @@ impl AppState {
         }
 
         state
+    }
+
+    fn check_health(&self) -> ApiHealth {
+        ApiHealth { status: HealthStatus::Pass }
     }
 
     fn initialize_database(&self, user_id: &str, stream_id: &str) {
@@ -260,6 +276,16 @@ async fn post_event(
     }
 }
 
+async fn health(state: State<Arc<AppState>>) -> Response {
+    let health = state.check_health();
+
+    let mut resp = Json(health).into_response();
+    let headers = resp.headers_mut();
+    headers.insert(CACHE_CONTROL, "max-age=60".parse().unwrap());
+
+    return resp
+}
+
 fn parse_expected_revision(expected_revision: &str) -> Result<ExpectedRevision, String> {
     match expected_revision {
         "any" => Ok(ExpectedRevision::Any),
@@ -279,7 +305,6 @@ async fn apply_secure_headers(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
 
     let headers = response.headers_mut();
-    headers.insert(CACHE_CONTROL, "no-store".parse().unwrap());
     headers.insert(X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
     headers.insert(X_FRAME_OPTIONS, "DENY".parse().unwrap());
     headers.insert(X_XSS_PROTECTION, "1; mode=block".parse().unwrap());
@@ -305,6 +330,7 @@ async fn main() {
     let app = Router::new()
         .route("/streams/:stream/events/:rownum", get(get_event))
         .route("/streams/:stream/events", post(post_event).get(get_event_index))
+        .route("/health", get(health))
         .layer(middleware::from_fn(apply_secure_headers))
         .with_state(state);
 
