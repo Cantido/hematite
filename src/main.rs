@@ -1,4 +1,4 @@
-use axum::{async_trait, Router, routing::get, routing::post, response::{Response, IntoResponse}, http::{StatusCode, request::Parts, header::{AUTHORIZATION, CACHE_CONTROL, X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS, X_XSS_PROTECTION, CONTENT_SECURITY_POLICY, CONTENT_LOCATION}}, extract::{FromRequestParts, State, Path, Json, Request, Query}, middleware::{Next, self}};
+use axum::{async_trait, Router, body::Body, routing::get, routing::post, response::{Response, IntoResponse}, http::{StatusCode, request::Parts, header}, extract::{Extension, FromRequestParts, State, Path, Json, Request, Query}, middleware::{Next, self}};
 use cloudevents::*;
 use data_encoding::BASE32_NOPAD;
 use hematite::db::{Database, ExpectedRevision};
@@ -20,7 +20,14 @@ struct ApiHealth {
     status: HealthStatus,
 }
 
-type UserMap = HashMap<String, StreamMap>;
+type UserId = String;
+
+#[derive(Clone, Debug)]
+struct User {
+    id: UserId,
+}
+
+type UserMap = HashMap<UserId, StreamMap>;
 type StreamMap = HashMap<String, Mutex<Database>>;
 
 struct AppState {
@@ -42,7 +49,7 @@ impl AppState {
         {
             if let Ok(user_dir) = user_dir_result {
                 let user_path = user_dir.path();
-                let user_id = user_path.file_stem().unwrap().to_str().unwrap();
+                let user_id: UserId = user_path.file_stem().unwrap().to_str().unwrap().to_string();
 
                 for db_file_result in user_dir
                     .path()
@@ -161,11 +168,10 @@ impl AppState {
 
 }
 
-async fn get_event(state: State<Arc<AppState>>, claims: Claims, stream: Path<(String, u64)>) -> Response {
-    let user_id = claims.sub;
+async fn get_event(state: State<Arc<AppState>>, Extension(user): Extension<User>, stream: Path<(String, u64)>) -> Response {
     let (stream_id, rownum) = stream.0;
 
-    let event_result = state.get_event(&user_id, &stream_id, rownum);
+    let event_result = state.get_event(&user.id, &stream_id, rownum);
 
     match event_result {
         Ok(Some(event)) => return Json(event).into_response(),
@@ -174,14 +180,13 @@ async fn get_event(state: State<Arc<AppState>>, claims: Claims, stream: Path<(St
     }
 }
 
-async fn get_event_index(state: State<Arc<AppState>>, claims: Claims, stream:Path<String>, query: Query<HashMap<String, String>>) -> Response {
-    let user_id = claims.sub;
+async fn get_event_index(state: State<Arc<AppState>>, Extension(user): Extension<User>, stream:Path<String>, query: Query<HashMap<String, String>>) -> Response {
     let stream_id = stream.0;
 
     let start = query.0.get("start").unwrap_or(&"0".to_string()).parse().unwrap_or(0).max(0);
     let limit = query.0.get("limit").unwrap_or(&"50".to_string()).parse().unwrap_or(50).min(1000);
 
-    let events_result = state.get_event_many(&user_id, &stream_id, start, limit);
+    let events_result = state.get_event_many(&user.id, &stream_id, start, limit);
 
     match events_result {
         Ok(events) => return Json(events).into_response(),
@@ -189,37 +194,85 @@ async fn get_event_index(state: State<Arc<AppState>>, claims: Claims, stream:Pat
     }
 }
 
+#[derive(Debug, Default, Serialize)]
+struct ApiErrorSource {
+    header: Option<String>,
+    query: Option<String>,
+}
+
+impl ApiErrorSource {
+    fn header(name: &str) -> Self {
+        Self {
+            header: Some(name.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn query(name: &str) -> Self {
+        Self {
+            query: Some(name.to_string()),
+            ..Default::default()
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct ApiError {
+    title: String,
+    detail: Option<String>,
+    source: ApiErrorSource,
+}
+
 #[derive(Debug, Deserialize)]
 struct Claims {
     sub: String,
 }
 
-#[async_trait]
-impl<S> FromRequestParts<S> for Claims
-where
-    S: Send + Sync,
-{
-    type Rejection = (StatusCode, &'static str);
+async fn auth(mut req: Request, next: Next) -> Result<Response, impl IntoResponse> {
+    let auth_token = req.headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|header| header.to_str().ok())
+        .and_then(|header| header.strip_prefix("Bearer "));
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        if let Some(auth_header) = parts.headers.get(AUTHORIZATION) {
-            let jwt_result = auth_header.to_str().unwrap().strip_prefix("Bearer ");
+    let auth_token =
+        if let Some(auth_token) = auth_token {
+            auth_token
+        } else {
+            let body = ApiError {
+                title: "Not authenticated".to_string(),
+                detail: Some("A Bearer token is required to access this API.".to_string()),
+                source: ApiErrorSource::header("Authorization"),
+            };
 
-            if jwt_result.is_some() {
-                let jwt = jwt_result.unwrap();
-                let secret = std::env::var("HEMATITE_JWT_SECRET").expect("Env var HEMATITE_JWT_SECRET is required.");
+            return Err((StatusCode::UNAUTHORIZED, Json::from(body)));
+        };
 
-                let mut validation = Validation::default();
-                validation.set_audience(&["hematite"]);
+    if let Some(current_user) = authorize_current_user(auth_token) {
+        req.extensions_mut().insert(current_user);
+        Ok(next.run(req).await)
+    } else {
+        let body = ApiError {
+            title: "Not authenticated".to_string(),
+            detail: Some("Bearer token is invalid.".to_string()),
+            source: ApiErrorSource::header("Authorization"),
+        };
 
-                let token_result = decode::<Claims>(&jwt, &DecodingKey::from_secret(&secret.into_bytes()), &validation);
+        return Err((StatusCode::UNAUTHORIZED, Json::from(body)));
+    }
+}
 
-                if let Ok(token) = token_result {
-                    return Ok(token.claims)
-                }
-            }
-        }
-        return Err((StatusCode::UNAUTHORIZED, "Bearer token is missing or invalid"))
+fn authorize_current_user(token: &str) -> Option<User> {
+    let secret = std::env::var("HEMATITE_JWT_SECRET").expect("Env var HEMATITE_JWT_SECRET is required.");
+
+    let mut validation = Validation::default();
+    validation.set_audience(&["hematite"]);
+
+    let token_result = decode::<Claims>(&token, &DecodingKey::from_secret(&secret.into_bytes()), &validation);
+
+    if let Ok(token) = token_result {
+        return Some(User{id: token.claims.sub})
+    } else {
+        None
     }
 }
 
@@ -237,42 +290,57 @@ enum PostEventPayload {
 
 async fn post_event(
     state: State<Arc<AppState>>,
-    claims: Claims,
+    Extension(user): Extension<User>,
     stream: Path<String>,
     query_params: Query<PostEventParams>,
     payload: Json<PostEventPayload>,
-) -> Response {
+) -> impl IntoResponse {
     let revision = {
         let default_revision = "any".to_owned();
         let revision_param = query_params.expected_revision.clone().unwrap_or(default_revision);
         let revision_result = parse_expected_revision(revision_param.as_str());
 
         if revision_result.is_err() {
-            return StatusCode::UNPROCESSABLE_ENTITY.into_response();
+            let body = ApiError {
+                title: "Invalid parameter".to_string(),
+                detail: Some("expected_revision is invalid.".to_string()),
+                source: ApiErrorSource::query("expected_revision"),
+            };
+            let mut resp = Json::from(body).into_response();
+            *resp.status_mut() = StatusCode::UNAUTHORIZED;
+            return resp
         }
 
         revision_result.unwrap()
     };
 
-    let user_id = claims.sub;
     let stream_id = stream.0;
 
-    state.initialize_database(&user_id, &stream_id);
+    state.initialize_database(&user.id, &stream_id);
 
     let result = match payload.0 {
-        PostEventPayload::Single(event) => state.insert_event(&user_id, &stream_id, event, revision),
-        PostEventPayload::Batch(events) => state.insert_event_many(&user_id, &stream_id, events, revision),
+        PostEventPayload::Single(event) => state.insert_event(&user.id, &stream_id, event, revision),
+        PostEventPayload::Batch(events) => state.insert_event_many(&user.id, &stream_id, events, revision),
     };
 
     match result {
         Ok(rownum) => {
-            let event_url = format!("http://localhost:8080/streams/{}/events/{}", stream_id, rownum);
-            let mut resp = StatusCode::CREATED.into_response();
-            let headers = resp.headers_mut();
-            headers.insert(CONTENT_LOCATION, event_url.parse().unwrap());
-            return resp;
+            return Response::builder()
+                .status(StatusCode::CREATED)
+                .header(header::CONTENT_LOCATION, format!("http://localhost:8080/streams/{}/events/{}", stream_id, rownum))
+                .body(Body::from(""))
+                .unwrap();
         }
-        Err(_err) => return StatusCode::CONFLICT.into_response(),
+        Err(_err) => {
+            let body = ApiError {
+                title: "Internal server error".to_string(),
+                detail: None,
+                source: ApiErrorSource::query("expected_revision"),
+            };
+            let mut resp = Json::from(body).into_response();
+            *resp.status_mut() = StatusCode::CONFLICT;
+            return resp
+        }
     }
 }
 
@@ -281,7 +349,7 @@ async fn health(state: State<Arc<AppState>>) -> Response {
 
     let mut resp = Json(health).into_response();
     let headers = resp.headers_mut();
-    headers.insert(CACHE_CONTROL, "max-age=60".parse().unwrap());
+    headers.insert(header::CACHE_CONTROL, "max-age=60".parse().unwrap());
 
     return resp
 }
@@ -305,10 +373,10 @@ async fn apply_secure_headers(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
 
     let headers = response.headers_mut();
-    headers.insert(X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
-    headers.insert(X_FRAME_OPTIONS, "DENY".parse().unwrap());
-    headers.insert(X_XSS_PROTECTION, "1; mode=block".parse().unwrap());
-    headers.insert(CONTENT_SECURITY_POLICY, "frame-ancestors 'none'".parse().unwrap());
+    headers.insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
+    headers.insert(header::X_FRAME_OPTIONS, "DENY".parse().unwrap());
+    headers.insert(header::X_XSS_PROTECTION, "1; mode=block".parse().unwrap());
+    headers.insert(header::CONTENT_SECURITY_POLICY, "frame-ancestors 'none'".parse().unwrap());
 
     return response;
 }
@@ -327,9 +395,13 @@ async fn main() {
 
     let state = Arc::new(AppState::new(streams_dir));
 
+    let stream_routes = Router::new()
+        .route("/:stream/events/:rownum", get(get_event))
+        .route("/:stream/events", post(post_event).get(get_event_index))
+        .layer(middleware::from_fn(auth));
+
     let app = Router::new()
-        .route("/streams/:stream/events/:rownum", get(get_event))
-        .route("/streams/:stream/events", post(post_event).get(get_event_index))
+        .nest("/streams", stream_routes)
         .route("/health", get(health))
         .layer(middleware::from_fn(apply_secure_headers))
         .with_state(state);
