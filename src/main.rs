@@ -2,7 +2,7 @@ use axum::{Router, body::Body, routing::{get, delete}, routing::post, response::
 use cloudevents::*;
 use data_encoding::BASE32_NOPAD;
 use hematite::db::{Database, ExpectedRevision};
-use log::info;
+use log::{info, error};
 use log4rs;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, env, fs, path::PathBuf, str, sync::{RwLock, Arc, Mutex}};
@@ -164,7 +164,7 @@ impl AppState {
         }
     }
 
-    fn delete_stream(&self, user_id: &str, stream_id: &str) -> anyhow::Result<()> {
+    fn delete_stream(&self, user_id: &str, stream_id: &str) -> anyhow::Result<bool> {
         let stream_exists = {
             let users = self.streams.read().unwrap();
             let user_streams = users.get(user_id).unwrap();
@@ -184,8 +184,7 @@ impl AppState {
             user_streams.remove(stream_id);
         }
 
-        // Idempotency!
-        Ok(())
+        Ok(stream_exists)
     }
 }
 
@@ -219,8 +218,12 @@ async fn delete_stream(state: State<Arc<AppState>>, Extension(user): Extension<U
     let delete_result = state.delete_stream(&user.id, &stream_id);
 
     match delete_result {
-        Ok(()) => return StatusCode::NO_CONTENT,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
+        Ok(true) => StatusCode::NO_CONTENT,
+        Ok(false) => StatusCode::NOT_FOUND,
+        Err(err) => {
+            error!("user_id={} stream_id={} Error deleting stream: {}", user.id, stream_id, err);
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
     }
 }
 
