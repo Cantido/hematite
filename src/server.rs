@@ -16,6 +16,7 @@ use serde::Serialize;
 use crate::db::{
     Database,
     ExpectedRevision,
+    RunState,
 };
 
 
@@ -32,6 +33,12 @@ pub type UserId = String;
 #[derive(Clone, Debug)]
 pub struct User {
     pub id: UserId,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Stream {
+    pub revision: u64,
+    pub state: RunState,
 }
 
 #[derive(Serialize)]
@@ -190,6 +197,21 @@ impl AppState {
 
         let result = db.lock().unwrap().insert_batch(events, revision);
         result
+    }
+
+    pub fn get_stream(&self, user_id: &str, stream_id: &str) -> Result<Stream> {
+        let users = self.streams.read().unwrap();
+        let user_streams = users.get(user_id).ok_or(Error::UserNotFound)?;
+        let db_lock = user_streams.get(stream_id).ok_or(Error::StreamNotFound)?;
+
+        let db = db_lock.lock().unwrap();
+        let revision = db.revision();
+        let state = db.state();
+
+        Ok(Stream {
+            revision,
+            state,
+        })
     }
 
     pub fn delete_stream(&self, user_id: &str, stream_id: &str) -> Result<bool> {

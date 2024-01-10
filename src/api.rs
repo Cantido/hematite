@@ -11,7 +11,7 @@ use axum::{
     http::{header, StatusCode},
     middleware::{self, Next},
     Router,
-    routing::{get, post, delete},
+    routing::{get, post},
     response::{
         IntoResponse,
         Response,
@@ -33,7 +33,7 @@ use crate::{
     db::ExpectedRevision,
     server::{
         AppState,
-        User,
+        User, Error,
     }
 };
 
@@ -64,6 +64,22 @@ struct ApiError {
     title: String,
     detail: Option<String>,
     source: ApiErrorSource,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum ApiDocument<T> {
+    DataDocument {
+        data: Option<ApiResource<T>>,
+    },
+    ErrorDocument {
+        errors: Option<Vec<ApiError>>,
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct ApiResource<T> {
+    attributes: T,
 }
 
 #[derive(Debug, Deserialize)]
@@ -102,11 +118,11 @@ pub fn stream_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/:stream/events/:rownum", get(get_event))
         .route("/:stream/events", post(post_event).get(get_event_index))
-        .route("/:stream", delete(delete_stream))
+        .route("/:stream", get(get_stream).delete(delete_stream))
         .layer(middleware::from_fn(auth))
 }
 
-async fn auth(mut req: Request, next: Next) -> Result<Response, impl IntoResponse> {
+async fn auth(mut req: Request, next: Next) -> Result<Response, Response> {
     let auth_token = req.headers()
         .get(header::AUTHORIZATION)
         .and_then(|header| header.to_str().ok())
@@ -116,26 +132,30 @@ async fn auth(mut req: Request, next: Next) -> Result<Response, impl IntoRespons
         if let Some(auth_token) = auth_token {
             auth_token
         } else {
-            let body = ApiError {
-                title: "Not authenticated".to_string(),
-                detail: Some("A Bearer token is required to access this API.".to_string()),
-                source: ApiErrorSource::header("Authorization"),
+            let body: ApiDocument<()> = ApiDocument::ErrorDocument {
+                errors: Some(vec![ApiError {
+                    title: "Not authenticated".to_string(),
+                    detail: Some("A Bearer token is required to access this API.".to_string()),
+                    source: ApiErrorSource::header("Authorization"),
+                }])
             };
 
-            return Err((StatusCode::UNAUTHORIZED, Json::from(body)));
+            return Err((StatusCode::UNAUTHORIZED, Json::from(body)).into_response());
         };
 
     if let Some(current_user) = authorize_current_user(auth_token) {
         req.extensions_mut().insert(current_user);
         Ok(next.run(req).await)
     } else {
-        let body = ApiError {
-            title: "Not authenticated".to_string(),
-            detail: Some("Bearer token is invalid.".to_string()),
-            source: ApiErrorSource::header("Authorization"),
+        let body: ApiDocument<()> = ApiDocument::ErrorDocument {
+            errors: Some(vec![ApiError {
+                title: "Not authenticated".to_string(),
+                detail: Some("Bearer token is invalid.".to_string()),
+                source: ApiErrorSource::header("Authorization"),
+            }])
         };
 
-        return Err((StatusCode::UNAUTHORIZED, Json::from(body)));
+        return Err((StatusCode::UNAUTHORIZED, Json::from(body)).into_response());
     }
 }
 
@@ -177,6 +197,30 @@ async fn get_event_index(state: State<Arc<AppState>>, Extension(user): Extension
     match events_result {
         Ok(events) => return Json(events).into_response(),
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+async fn get_stream(state: State<Arc<AppState>>, Extension(user): Extension<User>, Path(stream_id): Path<String>) -> Response {
+    let get_result = state.get_stream(&user.id, &stream_id);
+
+    match get_result {
+        Ok(stream) => {
+            let body = ApiDocument::DataDocument {
+                data: Some(ApiResource {
+                    attributes: Some(stream),
+                }),
+            };
+
+            let resp = Json::from(body);
+            (StatusCode::OK, resp).into_response()
+        }
+        Err(err) => {
+            match err.downcast::<Error>() {
+                Ok(Error::UserNotFound) => StatusCode::NOT_FOUND.into_response(),
+                Ok(Error::StreamNotFound) => StatusCode::NOT_FOUND.into_response(),
+                _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            }
+        }
     }
 }
 

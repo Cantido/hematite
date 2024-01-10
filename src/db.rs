@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use cloudevents::event::Event;
 use cloudevents::*;
+use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fs::{File, self};
 use std::io::prelude::*;
@@ -8,7 +9,7 @@ use std::io::{self, BufRead};
 use std::path::Path;
 use std::path::PathBuf;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum RunState {
     Stopped,
     Running
@@ -86,6 +87,14 @@ impl Database {
                 return Ok(true);
             }
         }
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.primary_index.last_key_value().map_or(0, |(&k, _v)| k)
+    }
+
+    pub fn state(&self) -> RunState {
+        self.state.clone()
     }
 
     pub fn query(&mut self, rownum: u64) -> Result<Option<Event>> {
