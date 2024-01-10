@@ -8,12 +8,20 @@ use std::io::{self, BufRead};
 use std::path::Path;
 use std::path::PathBuf;
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum RunState {
+    Stopped,
+    Running
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("revision mismatch")]
     RevisionMismatch,
     #[error("an event with that source and ID value is already present in the stream")]
     SourceIdConflict,
+    #[error("the database is currently not accepting requests")]
+    Stopped,
 }
 
 #[derive(Default)]
@@ -26,45 +34,65 @@ pub enum ExpectedRevision {
 }
 
 pub struct Database {
+    state: RunState,
     path: PathBuf,
     primary_index: BTreeMap<u64, u64>,
     source_id_index: BTreeMap<(String, String), u64>,
 }
 
 impl Database {
-    pub fn new(path: &Path) -> Result<Self> {
+    pub fn new(path: &Path) -> Self {
+        Self {
+            state: RunState::Stopped,
+            path: path.to_path_buf(),
+            primary_index: BTreeMap::new(),
+            source_id_index: BTreeMap::new(),
+        }
+    }
+
+    fn load(&mut self) -> Result<()> {
         let file = File::options()
             .read(true)
             .append(true)
             .create(true)
-            .open(path)
-            .with_context(|| format!("Could not open file to create DB at {:?}", path))?;
-
-        let mut primary_index = BTreeMap::new();
-        let mut source_id_index = BTreeMap::new();
+            .open(&self.path)
+            .with_context(|| format!("Could not open file to create DB at {:?}", self.path))?;
 
         let mut offset = 0u64;
 
         for (rowid, line_result) in io::BufReader::new(&file).lines().enumerate() {
-            let line = line_result.with_context(|| format!("Failed to read line {} of DB at {:?}", rowid + 1, path))?;
+            let line = line_result.with_context(|| format!("Failed to read line {} of DB at {:?}", rowid + 1, self.path))?;
             let rowlen: u64 = line.len() as u64;
 
-            let event = decode_event(line).with_context(|| format!("Failed to decode line {} of DB at {:?}", rowid + 1, path))?;
-            primary_index.insert(rowid as u64, offset);
-            source_id_index.insert((event.source().to_string(), event.id().to_string()), rowid as u64);
+            let event = decode_event(line).with_context(|| format!("Failed to decode line {} of DB at {:?}", rowid + 1, self.path))?;
+            self.primary_index.insert(rowid as u64, offset);
+            self.source_id_index.insert((event.source().to_string(), event.id().to_string()), rowid as u64);
 
             // offset addend is `rowlen + 1` because `BufReader::lines()` strips newlines for us
             offset = offset + rowlen + 1;
         }
 
-        Ok(Database {
-            path: path.to_path_buf(),
-            primary_index,
-            source_id_index,
-        })
+        Ok(())
+    }
+
+    pub fn start(&mut self) -> Result<bool> {
+        match self.state {
+            RunState::Running => {
+                return Ok(false)
+            }
+            RunState::Stopped => {
+                self.load()?;
+                self.state = RunState::Running;
+                return Ok(true);
+            }
+        }
     }
 
     pub fn query(&mut self, rownum: u64) -> Result<Option<Event>> {
+        if self.state != RunState::Running {
+            return Err(Error::Stopped.into());
+        }
+
         let mut file = File::options()
             .read(true)
             .append(true)
@@ -95,6 +123,10 @@ impl Database {
     }
 
     pub fn query_many(&mut self, start: u64, limit: u64) -> Result<Vec<Event>> {
+        if self.state != RunState::Running {
+            return Err(Error::Stopped.into());
+        }
+
         let mut file = File::options()
             .read(true)
             .append(true)
@@ -122,6 +154,10 @@ impl Database {
     }
 
     pub fn insert(&mut self, event: Event, expected_revision: ExpectedRevision) -> Result<u64> {
+        if self.state != RunState::Running {
+            return Err(Error::Stopped.into());
+        }
+
         let revision_match: bool = match expected_revision {
             ExpectedRevision::Any => true,
             ExpectedRevision::NoStream => self.primary_index.last_key_value().is_none(),
@@ -146,6 +182,10 @@ impl Database {
         events: Vec<Event>,
         expected_revision: ExpectedRevision,
     ) -> Result<u64> {
+        if self.state != RunState::Running {
+            return Err(Error::Stopped.into());
+        }
+
         let revision_match: bool = match expected_revision {
             ExpectedRevision::Any => true,
             ExpectedRevision::NoStream => self.primary_index.last_key_value().is_none(),
@@ -269,7 +309,8 @@ mod tests {
         let test_file = TestFile::new("writereadtest.db");
         let _ = test_file.delete();
 
-        let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+        let mut db = Database::new(test_file.path());
+        db.start().expect("Could not start DB");
 
         let event = Event::default();
 
@@ -290,7 +331,8 @@ mod tests {
         let test_file = TestFile::new("writereadtest.db");
         let _ = test_file.delete();
 
-        let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+        let mut db = Database::new(test_file.path());
+        db.start().expect("Could not start DB");
 
         let event = Event::default();
 
@@ -307,7 +349,8 @@ mod tests {
         let test_file = TestFile::new("readnonexistent.db");
         let _ = test_file.delete();
 
-        let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+        let mut db = Database::new(test_file.path());
+        db.start().expect("Could not start DB");
 
         let result = db.query(0).expect("Expected success reading empty db");
 
@@ -319,7 +362,8 @@ mod tests {
         let test_file = TestFile::new("nostreamemptydb.db");
         let _ = test_file.delete();
 
-        let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+        let mut db = Database::new(test_file.path());
+        db.start().expect("Could not start DB");
 
         let event = Event::default();
 
@@ -332,7 +376,8 @@ mod tests {
         let test_file = TestFile::new("nonemptydbexpectingnostream.db");
         let _ = test_file.delete();
 
-        let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+        let mut db = Database::new(test_file.path());
+        db.start().expect("Could not start DB");
 
         let event1 = Event::default();
         let event2 = Event::default();
@@ -346,7 +391,8 @@ mod tests {
         let test_file = TestFile::new("emptyexpectexists.db");
         let _ = test_file.delete();
 
-        let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+        let mut db = Database::new(test_file.path());
+        db.start().expect("Could not start DB");
 
         let event = Event::default();
 
@@ -358,7 +404,8 @@ mod tests {
         let test_file = TestFile::new("expectrevisionzerofailure.db");
         let _ = test_file.delete();
 
-        let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+        let mut db = Database::new(test_file.path());
+        db.start().expect("Could not start DB");
 
         let event = Event::default();
 
@@ -370,7 +417,8 @@ mod tests {
         let test_file = TestFile::new("expectrevisionzerofailure.db");
         let _ = test_file.delete();
 
-        let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+        let mut db = Database::new(test_file.path());
+        db.start().expect("Could not start DB");
 
         let event1 = Event::default();
         let event2 = Event::default();
@@ -385,7 +433,8 @@ mod tests {
         let test_file = TestFile::new("writereadmanytest.db");
         let _ = test_file.delete();
 
-        let mut db = Database::new(test_file.path()).expect("Could not initialize DB");
+        let mut db = Database::new(test_file.path());
+        db.start().expect("Could not start DB");
 
         let event = Event::default();
 

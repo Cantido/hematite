@@ -85,6 +85,7 @@ impl AppState {
                             .with_context(|| format!("Failed to convert stream file name into into string stream ID"))?;
 
                         state.initialize_database(&user_id, &stream_id)?;
+                        state.start_database(&user_id, &stream_id)?;
                     }
                 }
             }
@@ -132,13 +133,21 @@ impl AppState {
                 .join(stream_file_name)
                 .with_extension("hemadb");
 
-            let db = Database::new(&path)
-                .with_context(|| format!("Failed to initialize database at path {:?}", path))?;
+            let db = Database::new(&path);
 
             stream_map.insert(stream_id.to_owned(), Mutex::new(db));
         }
 
         Ok(init_db)
+    }
+
+    fn start_database(&self, user_id: &str, stream_id: &str) -> Result<bool> {
+        let users = self.streams.read().unwrap();
+        let streams = users.get(user_id).ok_or(Error::UserNotFound)?;
+        let db = streams.get(stream_id).ok_or(Error::StreamNotFound)?;
+
+        let result = db.lock().unwrap().start();
+        result
     }
 
     pub fn get_event(&self, user_id: &str, stream_id: &str, rownum: u64) -> Result<Option<Event>> {
@@ -161,6 +170,7 @@ impl AppState {
 
     pub fn insert_event(&self, user_id: &str, stream_id: &str, event: Event, revision: ExpectedRevision) -> Result<u64> {
         self.initialize_database(user_id, stream_id)?;
+        self.start_database(user_id, stream_id)?;
 
         let users = self.streams.read().unwrap();
         let user_streams = users.get(user_id).ok_or(Error::UserNotFound)?;
@@ -172,6 +182,7 @@ impl AppState {
 
     pub fn insert_event_many(&self, user_id: &str, stream_id: &str, events: Vec<Event>, revision: ExpectedRevision) -> Result<u64> {
         self.initialize_database(user_id, stream_id)?;
+        self.start_database(user_id, stream_id)?;
 
         let users = self.streams.read().unwrap();
         let user_streams = users.get(user_id).ok_or(Error::UserNotFound)?;
