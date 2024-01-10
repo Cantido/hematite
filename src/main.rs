@@ -11,8 +11,6 @@ use jsonwebtoken::{decode, DecodingKey, Validation};
 #[derive(Serialize)]
 enum HealthStatus {
     Pass,
-    Fail,
-    Warn,
 }
 
 #[derive(Serialize)]
