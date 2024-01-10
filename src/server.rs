@@ -8,14 +8,24 @@ use std::{
         RwLock,
     }
 };
+use anyhow::{Context, Result};
 use cloudevents::Event;
 use data_encoding::BASE32_NOPAD;
-use log::info;
+use log::debug;
 use serde::Serialize;
 use crate::db::{
     Database,
     ExpectedRevision,
 };
+
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error("stream not found")]
+    StreamNotFound,
+    #[error("user not found")]
+    UserNotFound,
+}
 
 pub type UserId = String;
 
@@ -43,7 +53,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(streams_path: PathBuf) -> Self {
+    pub fn new(streams_path: PathBuf) -> Result<Self> {
         let state = AppState {
             streams_path,
             streams: RwLock::new(HashMap::new()),
@@ -52,152 +62,151 @@ impl AppState {
         for user_dir_result in state
             .streams_path
             .read_dir()
-            .expect("Couldn't read stream directory")
+            .with_context(|| format!("Couldn't read stream directory at {:?}", state.streams_path))?
         {
             if let Ok(user_dir) = user_dir_result {
                 let user_path = user_dir.path();
                 let user_id: UserId = user_path.file_stem().unwrap().to_str().unwrap().to_string();
 
+                state.initialize_user(&user_id)?;
+
                 for db_file_result in user_dir
                     .path()
                     .read_dir()
-                    .expect("Couldn't read user directory")
+                    .with_context(|| format!("Couldn't read user directory at {:?}", user_dir))?
                 {
                     if let Ok(db_file) = db_file_result {
                         let filepath = db_file.path();
-                        let encoded_stream_id = filepath.file_stem().unwrap().to_str();
+                        let encoded_stream_id = filepath.file_stem().unwrap().to_str().unwrap();
                         let stream_id_bytes = BASE32_NOPAD
-                            .decode(encoded_stream_id.unwrap().as_bytes())
-                            .expect("Expected file in stream dir to have a Base32 no-pad encoded filename");
-                        let stream_id = str::from_utf8(stream_id_bytes.as_slice()).unwrap();
+                            .decode(encoded_stream_id.as_bytes())
+                            .with_context(|| format!("Expected file in stream dir to have a Base32 no-pad encoded filename, but it was {}", encoded_stream_id))?;
+                        let stream_id = str::from_utf8(stream_id_bytes.as_slice())
+                            .with_context(|| format!("Failed to convert stream file name into into string stream ID"))?;
 
-                        info!("Initializing stream {}", &stream_id);
-
-                        state.initialize_database(&user_id, &stream_id);
+                        state.initialize_database(&user_id, &stream_id)?;
                     }
                 }
             }
         }
 
-        state
+        Ok(state)
     }
 
     pub fn check_health(&self) -> ApiHealth {
         ApiHealth { status: HealthStatus::Pass }
     }
 
-    fn initialize_database(&self, user_id: &str, stream_id: &str) {
-        let init_user = {
-            let users = self.streams.read().unwrap();
+    fn initialize_user(&self, user_id: &str) -> Result<bool> {
+        let mut users = self.streams.write().unwrap();
 
-            !users.contains_key(user_id)
-        };
+        let init_user = !users.contains_key(user_id);
 
         if init_user {
-            let mut path = self.streams_path.clone();
-            path.push(user_id);
-            fs::create_dir_all(path).expect("Could not create user directory");
+            debug!("user_id={} msg=\"Initializing user\"", user_id);
 
-            let mut users = self.streams.write().unwrap();
+            let path = self.streams_path.join(user_id);
+            fs::create_dir_all(&path)
+                .with_context(|| format!("Could not create user directory at {:?}", path))?;
+
             users.insert(user_id.to_string(), HashMap::new());
         }
 
-        let init_db = {
-            let users = self.streams.read().unwrap();
-            let streams = users.get(user_id).unwrap();
+        Ok(init_user)
+    }
 
-            !streams.contains_key(stream_id)
-        };
+    fn initialize_database(&self, user_id: &str, stream_id: &str) -> Result<bool> {
+        let mut streams_mut = self.streams.write().unwrap();
+        let stream_map = streams_mut.get_mut(user_id).ok_or(Error::UserNotFound)?;
+
+        let init_db = !stream_map.contains_key(stream_id);
 
         if init_db {
+            debug!("user_id={} stream_id={} msg=\"Initializing stream\"", user_id, stream_id);
+
             let stream_file_name: String = BASE32_NOPAD.encode(stream_id.as_bytes());
 
-            let mut path = self.streams_path.clone();
-            path.push(user_id);
-            path.push(stream_file_name);
-            path.set_extension("hemadb");
+            let path =
+                self.streams_path
+                .join(user_id)
+                .join(stream_file_name)
+                .with_extension("hemadb");
 
-            let db = Database::new(&path).expect("Failed to initialize database");
+            let db = Database::new(&path)
+                .with_context(|| format!("Failed to initialize database at path {:?}", path))?;
 
-            let mut streams_mut = self.streams.write().unwrap();
-            let stream_map = streams_mut.get_mut(user_id).unwrap();
             stream_map.insert(stream_id.to_owned(), Mutex::new(db));
         }
+
+        Ok(init_db)
     }
 
-    pub fn get_event(&self, user_id: &str, stream_id: &str, rownum: u64) -> anyhow::Result<Option<Event>> {
+    pub fn get_event(&self, user_id: &str, stream_id: &str, rownum: u64) -> Result<Option<Event>> {
         let users = self.streams.read().unwrap();
-        let user_streams = users.get(user_id).unwrap();
-        let db_option = user_streams.get(stream_id);
+        let user_streams = users.get(user_id).ok_or(Error::UserNotFound)?;
+        let db = user_streams.get(stream_id).ok_or(Error::StreamNotFound)?;
 
-        if let Some(db) = db_option {
-            db.lock().unwrap().query(rownum)
-        } else {
-            Ok(None)
-        }
+        let result = db.lock().unwrap().query(rownum);
+        result
     }
 
-    pub fn get_event_many(&self, user_id: &str, stream_id: &str, start: u64, limit: u64) -> anyhow::Result<Vec<Event>> {
+    pub fn get_event_many(&self, user_id: &str, stream_id: &str, start: u64, limit: u64) -> Result<Vec<Event>> {
         let users = self.streams.read().unwrap();
-        let user_streams = users.get(user_id).unwrap();
-        let db_option = user_streams.get(stream_id);
+        let user_streams = users.get(user_id).ok_or(Error::UserNotFound)?;
+        let db = user_streams.get(stream_id).ok_or(Error::StreamNotFound)?;
 
-        if let Some(db) = db_option {
-            db.lock().unwrap().query_many(start, limit)
-        } else {
-            Ok(vec![])
-        }
+        let result = db.lock().unwrap().query_many(start, limit);
+        result
     }
 
-    pub fn insert_event(&self, user_id: &str, stream_id: &str, event: Event, revision: ExpectedRevision) -> anyhow::Result<u64> {
-        self.initialize_database(user_id, stream_id);
+    pub fn insert_event(&self, user_id: &str, stream_id: &str, event: Event, revision: ExpectedRevision) -> Result<u64> {
+        self.initialize_database(user_id, stream_id)?;
 
         let users = self.streams.read().unwrap();
-        let user_streams = users.get(user_id).unwrap();
-        let db_option = user_streams.get(stream_id);
+        let user_streams = users.get(user_id).ok_or(Error::UserNotFound)?;
+        let db = user_streams.get(stream_id).ok_or(Error::StreamNotFound)?;
 
-        if let Some(db) = db_option {
-            db.lock().unwrap().insert(event, revision)
-        } else {
-            anyhow::bail!("stream not found")
-        }
+        let result = db.lock().unwrap().insert(event, revision);
+        result
     }
 
-    pub fn insert_event_many(&self, user_id: &str, stream_id: &str, events: Vec<Event>, revision: ExpectedRevision) -> anyhow::Result<u64> {
-        self.initialize_database(user_id, stream_id);
+    pub fn insert_event_many(&self, user_id: &str, stream_id: &str, events: Vec<Event>, revision: ExpectedRevision) -> Result<u64> {
+        self.initialize_database(user_id, stream_id)?;
 
         let users = self.streams.read().unwrap();
-        let user_streams = users.get(user_id).unwrap();
-        let db_option = user_streams.get(stream_id);
+        let user_streams = users.get(user_id).ok_or(Error::UserNotFound)?;
+        let db = user_streams.get(stream_id).ok_or(Error::StreamNotFound)?;
 
-        if let Some(db) = db_option {
-            db.lock().unwrap().insert_batch(events, revision)
-        } else {
-            anyhow::bail!("stream not found")
-        }
+        let result = db.lock().unwrap().insert_batch(events, revision);
+        result
     }
 
-    pub fn delete_stream(&self, user_id: &str, stream_id: &str) -> anyhow::Result<bool> {
+    pub fn delete_stream(&self, user_id: &str, stream_id: &str) -> Result<bool> {
         let stream_exists = {
-            let users = self.streams.read().unwrap();
-            let user_streams = users.get(user_id).unwrap();
-            let db_option = user_streams.get(stream_id);
-
-            if let Some(db) = db_option {
-                db.lock().unwrap().delete()?;
-                true
-            } else {
-                false
-            }
+            self.streams
+                .read()
+                .unwrap()
+                .get(user_id)
+                .map(|user_streams| user_streams.get(stream_id))
+                .flatten()
+                .map(|db| db.lock().unwrap().delete())
+                .transpose()
+                .with_context(|| format!("user_id={} stream_id={} Failed to delete stream", user_id, stream_id))?
+                .is_some()
         };
 
         if stream_exists {
             let mut users = self.streams.write().unwrap();
-            let user_streams = users.get_mut(user_id).unwrap();
-            user_streams.remove(stream_id);
-        }
 
-        Ok(stream_exists)
+            if let Some(user_streams) = users.get_mut(user_id) {
+                user_streams.remove(stream_id);
+                return Ok(true)
+            } else {
+                return Ok(false)
+            }
+        } else {
+            Ok(false)
+        }
     }
 }
 

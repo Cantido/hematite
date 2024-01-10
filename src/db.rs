@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Context, Result};
 use cloudevents::event::Event;
 use cloudevents::*;
 use std::collections::BTreeMap;
@@ -7,6 +7,14 @@ use std::io::prelude::*;
 use std::io::{self, BufRead};
 use std::path::Path;
 use std::path::PathBuf;
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error("revision mismatch")]
+    RevisionMismatch,
+    #[error("an event with that source and ID value is already present in the stream")]
+    SourceIdConflict,
+}
 
 #[derive(Default)]
 pub enum ExpectedRevision {
@@ -29,25 +37,24 @@ impl Database {
             .read(true)
             .append(true)
             .create(true)
-            .open(path)?;
+            .open(path)
+            .with_context(|| format!("Could not open file to create DB at {:?}", path))?;
 
         let mut primary_index = BTreeMap::new();
         let mut source_id_index = BTreeMap::new();
 
         let mut offset = 0u64;
-        let mut rownum = 0u64;
 
-        for line in io::BufReader::new(&file).lines() {
-            let b64 = line.unwrap();
-            let rowlen: u64 = b64.len() as u64;
+        for (rowid, line_result) in io::BufReader::new(&file).lines().enumerate() {
+            let line = line_result.with_context(|| format!("Failed to read line {} of DB at {:?}", rowid + 1, path))?;
+            let rowlen: u64 = line.len() as u64;
 
-            let event = decode_event(b64);
-            primary_index.insert(rownum, offset);
-            source_id_index.insert((event.source().to_string(), event.id().to_string()), rownum);
+            let event = decode_event(line).with_context(|| format!("Failed to decode line {} of DB at {:?}", rowid + 1, path))?;
+            primary_index.insert(rowid as u64, offset);
+            source_id_index.insert((event.source().to_string(), event.id().to_string()), rowid as u64);
 
             // offset addend is `rowlen + 1` because `BufReader::lines()` strips newlines for us
             offset = offset + rowlen + 1;
-            rownum = rownum + 1;
         }
 
         Ok(Database {
@@ -62,22 +69,29 @@ impl Database {
             .read(true)
             .append(true)
             .create(true)
-            .open(&self.path)?;
+            .open(&self.path)
+            .with_context(|| format!("Could not open file to query DB at {:?}", self.path))?;
 
         let row_offset = match self.primary_index.get(&rownum) {
             Some(row_offset) => row_offset,
             None => return Ok(None),
         };
+
         let _position = file
             .seek(io::SeekFrom::Start(*row_offset))
-            .expect("Cannot seek to rownum's row");
+            .with_context(|| format!("Failed to seek to row {} (offset {}) from DB at {:?}", rownum, row_offset, self.path))?;
 
-        io::BufReader::new(&file)
-            .lines()
-            .next()
-            .transpose()
-            .map(|r| r.map(decode_event))
-            .map_err(|e| e.into())
+        let event =
+            if let Some(line_result) = io::BufReader::new(&file).lines().next() {
+                let line = line_result.with_context(|| format!("Failed to read rowid {} (offset {}) from DB at {:?}", rownum, row_offset, self.path))?;
+                let event = decode_event(line).with_context(|| format!("Failed to decode row {} (offset {}) from DB at {:?}", rownum, row_offset, self.path))?;
+
+                Some(event)
+            } else {
+                None
+            };
+
+        Ok(event)
     }
 
     pub fn query_many(&mut self, start: u64, limit: u64) -> Result<Vec<Event>> {
@@ -85,7 +99,8 @@ impl Database {
             .read(true)
             .append(true)
             .create(true)
-            .open(&self.path)?;
+            .open(&self.path)
+            .with_context(|| format!("Could not open file to query DB at {:?}", self.path))?;
 
         let row_offset = match self.primary_index.get(&start) {
             Some(row_offset) => row_offset,
@@ -93,12 +108,13 @@ impl Database {
         };
         let _position = file
             .seek(io::SeekFrom::Start(*row_offset))
-            .expect("Cannot seek to rownum's row");
+            .with_context(|| format!("Failed to seek to row {} (offset {}) from DB at {:?}", start, row_offset, self.path))?;
 
         let mut events = vec![];
 
-        for line in io::BufReader::new(&file).lines().take(limit.try_into().unwrap()) {
-            let event = decode_event(line?);
+        for (rowid, line_result) in io::BufReader::new(&file).lines().take(limit.try_into().unwrap()).enumerate() {
+            let line = line_result.with_context(|| format!("Failed to read rowid {} from DB at {:?}", rowid, self.path))?;
+            let event = decode_event(line)?;
             events.push(event);
         }
 
@@ -118,10 +134,10 @@ impl Database {
         };
 
         if revision_match {
-            self.write_event(event)?;
-            Ok(self.primary_index.last_key_value().unwrap().0.clone())
+            self.write_event(event)
+                .with_context(|| format!("Failed to write event to DB at {:?}", self.path))
         } else {
-            bail!("revision mismatch");
+            Err(Error::RevisionMismatch.into())
         }
     }
 
@@ -147,28 +163,33 @@ impl Database {
             }
             Ok(self.primary_index.last_key_value().unwrap().0.clone())
         } else {
-            bail!("revision mismatch");
+            Err(Error::RevisionMismatch.into())
         }
     }
 
-    fn write_event(&mut self, event: Event) -> Result<()> {
+    fn write_event(&mut self, event: Event) -> Result<u64> {
         if self
             .source_id_index
             .contains_key(&(event.source().to_string(), event.id().to_string()))
         {
-            bail!("Event with that source and ID value already exists in this stream");
+            return Err(Error::SourceIdConflict.into());
         }
 
         let mut file = File::options()
             .read(true)
             .append(true)
             .create(true)
-            .open(&self.path)?;
+            .open(&self.path)
+            .with_context(|| format!("Failed to open file for DB at {:?}", self.path))?;
 
-        let position = file.seek(io::SeekFrom::End(0))?;
+        let position = file.seek(io::SeekFrom::End(0))
+            .with_context(|| format!("Failed to seek to end of file for DB at {:?}", self.path))?;
 
-        let encoded = encode_event(&event)?;
-        file.write_all(&encoded)?;
+        let encoded = encode_event(&event)
+            .with_context(|| format!("Failed to encode event"))?;
+
+        file.write_all(&encoded)
+            .with_context(|| format!("Failed to write event to file for DB at {:?}", self.path))?;
 
         let (event_rownum, event_offset) = match self.primary_index.last_key_value() {
             None => (0, 0),
@@ -181,11 +202,12 @@ impl Database {
             event_rownum,
         );
 
-        Ok(())
+        Ok(event_rownum)
     }
 
     pub fn delete(&mut self) -> anyhow::Result<()> {
-        fs::remove_file(&self.path)?;
+        fs::remove_file(&self.path)
+            .with_context(|| format!("Failed to delete datbase file at {:?}", self.path))?;
         self.primary_index.clear();
         self.source_id_index.clear();
 
@@ -194,17 +216,18 @@ impl Database {
 }
 
 fn encode_event(event: &Event) -> Result<Vec<u8>> {
-    let json = serde_json::to_string(&event)?;
+    let json = serde_json::to_string(&event).with_context(|| format!("Failed to JSONify event"))?;
 
     let mut row = Vec::new();
-    write!(&mut row, "{}\n", json)?;
+    write!(&mut row, "{}\n", json).with_context(|| format!("Failed to write JSON bytes to Vec"))?;
     Ok(row)
 }
 
-fn decode_event(row: String) -> Event {
+fn decode_event(row: String) -> Result<Event> {
     let json = row.trim_end();
 
-    serde_json::from_str(&json).expect("Expected row to be deserializable to json")
+    serde_json::from_str(&json)
+            .with_context(|| format!("Failed to decode event JSON"))
 }
 
 #[cfg(test)]

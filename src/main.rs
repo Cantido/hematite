@@ -9,7 +9,7 @@ use std::{env, fs, path::PathBuf, str, sync::Arc};
 
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log4rs::init_file("config/log4rs.yml", Default::default()).unwrap();
 
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
@@ -20,7 +20,7 @@ async fn main() {
     info!("Starting Hematite DB version {}", VERSION);
     info!("Stream database directory: {}", streams_dir.display());
 
-    let state = Arc::new(AppState::new(streams_dir));
+    let state = Arc::new(AppState::new(streams_dir)?);
 
     let app = Router::new()
         .nest("/streams", api::stream_routes())
@@ -29,9 +29,11 @@ async fn main() {
         .fallback(fallback)
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
 
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, app).await?;
+
+    Ok(())
 }
 
 async fn apply_secure_headers(request: Request, next: Next) -> Response {
