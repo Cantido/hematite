@@ -2,7 +2,7 @@ use anyhow::{bail, Result};
 use cloudevents::event::Event;
 use cloudevents::*;
 use std::collections::BTreeMap;
-use std::fs::File;
+use std::fs::{File, self};
 use std::io::prelude::*;
 use std::io::{self, BufRead};
 use std::path::Path;
@@ -180,6 +180,14 @@ impl Database {
             (event.source().to_string(), event.id().to_string()),
             event_rownum,
         );
+
+        Ok(())
+    }
+
+    pub fn delete(&mut self) -> anyhow::Result<()> {
+        fs::remove_file(&self.path)?;
+        self.primary_index.clear();
+        self.source_id_index.clear();
 
         Ok(())
     }

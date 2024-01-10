@@ -1,4 +1,4 @@
-use axum::{async_trait, Router, body::Body, routing::get, routing::post, response::{Response, IntoResponse}, http::{StatusCode, request::Parts, header}, extract::{Extension, FromRequestParts, State, Path, Json, Request, Query}, middleware::{Next, self}};
+use axum::{Router, body::Body, routing::{get, delete}, routing::post, response::{Response, IntoResponse}, http::{StatusCode, header}, extract::{Extension, State, Path, Json, Request, Query}, middleware::{Next, self}};
 use cloudevents::*;
 use data_encoding::BASE32_NOPAD;
 use hematite::db::{Database, ExpectedRevision};
@@ -166,6 +166,29 @@ impl AppState {
         }
     }
 
+    fn delete_stream(&self, user_id: &str, stream_id: &str) -> anyhow::Result<()> {
+        let stream_exists = {
+            let users = self.streams.read().unwrap();
+            let user_streams = users.get(user_id).unwrap();
+            let db_option = user_streams.get(stream_id);
+
+            if let Some(db) = db_option {
+                db.lock().unwrap().delete()?;
+                true
+            } else {
+                false
+            }
+        };
+
+        if stream_exists {
+            let mut users = self.streams.write().unwrap();
+            let user_streams = users.get_mut(user_id).unwrap();
+            user_streams.remove(stream_id);
+        }
+
+        // Idempotency!
+        Ok(())
+    }
 }
 
 async fn get_event(state: State<Arc<AppState>>, Extension(user): Extension<User>, stream: Path<(String, u64)>) -> Response {
@@ -191,6 +214,15 @@ async fn get_event_index(state: State<Arc<AppState>>, Extension(user): Extension
     match events_result {
         Ok(events) => return Json(events).into_response(),
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+async fn delete_stream(state: State<Arc<AppState>>, Extension(user): Extension<User>, Path(stream_id): Path<String>) -> impl IntoResponse {
+    let delete_result = state.delete_stream(&user.id, &stream_id);
+
+    match delete_result {
+        Ok(()) => return StatusCode::NO_CONTENT,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
@@ -398,6 +430,7 @@ async fn main() {
     let stream_routes = Router::new()
         .route("/:stream/events/:rownum", get(get_event))
         .route("/:stream/events", post(post_event).get(get_event_index))
+        .route("/:stream", delete(delete_stream))
         .layer(middleware::from_fn(auth));
 
     let app = Router::new()
