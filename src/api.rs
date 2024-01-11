@@ -17,6 +17,7 @@ use axum::{
         Response,
     }
 };
+use anyhow::{bail, Result};
 use cloudevents::Event;
 use jsonwebtoken::{
     decode,
@@ -74,7 +75,7 @@ impl ApiError {
 
 #[derive(Debug, Serialize)]
 struct ApiDataDocument<T> {
-    data: Option<ApiResource<T>>,
+    data: ApiResource<T>,
 }
 
 #[derive(Debug, Serialize)]
@@ -94,6 +95,15 @@ impl ApiErrorDocument {
 struct ApiResource<T> {
     attributes: T,
 }
+
+impl<T> ApiResource<T> {
+    fn into_document(self) -> ApiDataDocument<T> {
+        ApiDataDocument {
+            data: self,
+        }
+    }
+}
+
 
 #[derive(Debug, Deserialize)]
 struct Claims {
@@ -214,11 +224,9 @@ async fn get_stream(state: State<Arc<AppState>>, Extension(user): Extension<User
 
     match get_result {
         Ok(stream) => {
-            let body = ApiDataDocument {
-                data: Some(ApiResource {
-                    attributes: Some(stream),
-                }),
-            };
+            let body = ApiResource {
+                attributes: Some(stream),
+            }.into_document();
 
             let resp = Json::from(body);
             (StatusCode::OK, resp).into_response()
@@ -295,7 +303,7 @@ async fn post_event(
     }
 }
 
-fn parse_expected_revision(expected_revision: &str) -> Result<ExpectedRevision, String> {
+fn parse_expected_revision(expected_revision: &str) -> Result<ExpectedRevision> {
     match expected_revision {
         "any" => Ok(ExpectedRevision::Any),
         "no-stream" => Ok(ExpectedRevision::NoStream),
@@ -304,7 +312,7 @@ fn parse_expected_revision(expected_revision: &str) -> Result<ExpectedRevision, 
             if let Ok(exact_revision) = exact.parse() {
                 Ok(ExpectedRevision::Exact(exact_revision))
             } else {
-                Err("String was not a revision number or a recognized token".to_string())
+                bail!("String was not a revision number or a recognized token")
             }
         }
     }
