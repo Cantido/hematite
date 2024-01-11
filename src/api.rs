@@ -279,7 +279,7 @@ async fn get_stream(state: State<Arc<AppState>>, Extension(user): Extension<User
         Err(err) => {
             match err.downcast::<server::Error>() {
                 Ok(server::Error::StreamNotFound) => StatusCode::NOT_FOUND.into_response(),
-                err => {
+                Err(err) => {
                     let error_id = Uuid::now_v7();
                     error!("error_id={}, user_id={} stream_id={} Error getting stream: {:?}", error_id, user.id, stream_id, err);
 
@@ -401,7 +401,7 @@ async fn post_event(
                     }.into_document();
                     return (StatusCode::CONFLICT, Json::from(body)).into_response()
                 },
-                err => {
+                Err(err) => {
                     error!("error_id={}, Failed to post event: {:?}", error_id, err);
                     let body = ApiError {
                         id: error_id,
