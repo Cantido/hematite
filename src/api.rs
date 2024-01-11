@@ -220,9 +220,7 @@ fn authorize_current_user(token: &str) -> Result<User> {
     }
 }
 
-async fn get_event(state: State<Arc<AppState>>, Extension(user): Extension<User>, stream: Path<(String, u64)>) -> Response {
-    let (stream_id, rownum) = stream.0;
-
+async fn get_event(state: State<Arc<AppState>>, Extension(user): Extension<User>, Path((stream_id, rownum)): Path<(String, u64)>) -> Response {
     let event_result = state.get_event(&user.id, &stream_id, rownum);
 
     match event_result {
@@ -243,11 +241,9 @@ async fn get_event(state: State<Arc<AppState>>, Extension(user): Extension<User>
     }
 }
 
-async fn get_event_index(state: State<Arc<AppState>>, Extension(user): Extension<User>, stream:Path<String>, query: Query<HashMap<String, String>>) -> Response {
-    let stream_id = stream.0;
-
-    let start = query.0.get("start").unwrap_or(&"0".to_string()).parse().unwrap_or(0).max(0);
-    let limit = query.0.get("limit").unwrap_or(&"50".to_string()).parse().unwrap_or(50).min(1000);
+async fn get_event_index(state: State<Arc<AppState>>, Extension(user): Extension<User>, Path(stream_id): Path<String>, Query(query): Query<HashMap<String, String>>) -> Response {
+    let start = query.get("start").unwrap_or(&"0".to_string()).parse().unwrap_or(0).max(0);
+    let limit = query.get("limit").unwrap_or(&"50".to_string()).parse().unwrap_or(50).min(1000);
 
     let events_result = state.get_event_many(&user.id, &stream_id, start, limit);
 
@@ -336,9 +332,9 @@ enum PostEventPayload {
 async fn post_event(
     state: State<Arc<AppState>>,
     Extension(user): Extension<User>,
-    stream: Path<String>,
-    query_params: Query<PostEventParams>,
-    payload: Json<PostEventPayload>,
+    Path(stream_id): Path<String>,
+    Query(query_params): Query<PostEventParams>,
+    Json(payload): Json<PostEventPayload>,
 ) -> Response {
     let revision = {
         let default_revision = "any".to_owned();
@@ -360,8 +356,7 @@ async fn post_event(
         revision_result.unwrap()
     };
 
-    let stream_id = stream.0;
-    let result = match payload.0 {
+    let result = match payload {
         PostEventPayload::Single(event) => state.insert_event(&user.id, &stream_id, event, revision),
         PostEventPayload::Batch(events) => state.insert_event_many(&user.id, &stream_id, events, revision),
     };
