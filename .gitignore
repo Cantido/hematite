@@ -1,4 +1,6 @@
+/api/.env
 /target
 .envrc
 cats-report
 tmp
+
