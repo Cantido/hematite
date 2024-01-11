@@ -366,7 +366,7 @@ async fn post_event(
             return Response::builder()
                 .status(StatusCode::CREATED)
                 .header(header::CONTENT_LOCATION, format!("http://localhost:8080/streams/{}/events/{}", stream_id, rownum))
-                .body(Body::from(""))
+                .body(Body::empty())
                 .unwrap();
         }
         Err(err) => {
