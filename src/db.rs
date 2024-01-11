@@ -25,7 +25,7 @@ pub enum Error {
     Stopped,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub enum ExpectedRevision {
     #[default]
     Any,

@@ -27,15 +27,17 @@ use jsonwebtoken::{
 };
 use log::{error, debug};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 use std::{
     collections::HashMap,
     sync::Arc,
 };
 use crate::{
-    db::ExpectedRevision,
+    db::{self, ExpectedRevision},
     server::{
+        self,
         AppState,
-        User, Error,
+        User,
     }
 };
 
@@ -63,9 +65,10 @@ impl ApiErrorSource {
 
 #[derive(Debug, Serialize)]
 struct ApiError {
+    id: Uuid,
     title: String,
     detail: Option<String>,
-    source: ApiErrorSource,
+    source: Option<ApiErrorSource>,
 }
 
 impl ApiError {
@@ -105,38 +108,23 @@ impl<T> ApiResource<T> {
     }
 }
 
-
 #[derive(Debug, Deserialize)]
 struct Claims {
     sub: String,
 }
 
-#[derive(Deserialize, Debug)]
-struct PostEventParams {
-    expected_revision: Option<String>,
-}
-
-#[derive(Deserialize, Debug)]
-#[serde(untagged)]
-enum PostEventPayload {
-    Single(Event),
-    Batch(Vec<Event>),
-}
-
 async fn health(state: State<Arc<AppState>>) -> Response {
     let health = state.check_health();
 
-    let mut resp = Json(health).into_response();
-    let headers = resp.headers_mut();
-    headers.insert(header::CACHE_CONTROL, "max-age=60".parse().unwrap());
-
-    return resp
+    return (
+        [(header::CACHE_CONTROL, "max-age=60")],
+        Json::from(health),
+    ).into_response();
 }
 
 pub fn health_routes() -> Router<Arc<AppState>> {
     Router::new().route("/", get(health))
 }
-
 
 pub fn stream_routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -156,10 +144,13 @@ async fn auth(mut req: Request, next: Next) -> Result<Response, Response> {
         if let Some(auth_token) = auth_token {
             auth_token
         } else {
+            let error_id = Uuid::now_v7();
+            debug!("error_id={} Request is missing Bearer token", error_id);
             let body = ApiError {
+                id: error_id,
                 title: "Not authenticated".to_string(),
                 detail: Some("A Bearer token is required to access this API.".to_string()),
-                source: ApiErrorSource::header("Authorization"),
+                source: Some(ApiErrorSource::header("Authorization")),
             }.into_document();
 
             let resp = (
@@ -177,6 +168,9 @@ async fn auth(mut req: Request, next: Next) -> Result<Response, Response> {
             return Ok(next.run(req).await);
         },
         Err(err) => {
+            let error_id = Uuid::now_v7();
+            error!("error_id={} Error validating auth token: {:?}", error_id, err);
+
             let desc =
                 if let Ok(jwt_error) = err.downcast::<jsonwebtoken::errors::Error>() {
                     let kind = jwt_error.kind();
@@ -192,10 +186,12 @@ async fn auth(mut req: Request, next: Next) -> Result<Response, Response> {
                     "Bearer token is invalid"
                 };
 
+
             let body = ApiError {
+                id: error_id,
                 title: "Not authenticated".to_string(),
                 detail: Some(desc.to_string()),
-                source: ApiErrorSource::header("Authorization"),
+                source: Some(ApiErrorSource::header("Authorization")),
             }.into_document();
 
             let resp = (
@@ -232,7 +228,18 @@ async fn get_event(state: State<Arc<AppState>>, Extension(user): Extension<User>
     match event_result {
         Ok(Some(event)) => return Json(event).into_response(),
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(err) => {
+            let error_id = Uuid::now_v7();
+            error!("error_id={}, user_id={} stream_id={} Error getting event: {:?}", error_id, user.id, stream_id, err);
+
+            let body = ApiError {
+                id: error_id,
+                title: "Internal server error".to_string(),
+                detail: None,
+                source: None,
+            }.into_document();
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json::from(body)).into_response()
+        },
     }
 }
 
@@ -246,7 +253,18 @@ async fn get_event_index(state: State<Arc<AppState>>, Extension(user): Extension
 
     match events_result {
         Ok(events) => return Json(events).into_response(),
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(err) => {
+            let error_id = Uuid::now_v7();
+            error!("error_id={}, user_id={} stream_id={} Error getting events: {:?}", error_id, user.id, stream_id, err);
+
+            let body = ApiError {
+                id: error_id,
+                title: "Internal server error".to_string(),
+                detail: None,
+                source: None,
+            }.into_document();
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json::from(body)).into_response()
+        },
     }
 }
 
@@ -263,25 +281,56 @@ async fn get_stream(state: State<Arc<AppState>>, Extension(user): Extension<User
             (StatusCode::OK, resp).into_response()
         }
         Err(err) => {
-            match err.downcast::<Error>() {
-                Ok(Error::StreamNotFound) => StatusCode::NOT_FOUND.into_response(),
-                _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            match err.downcast::<server::Error>() {
+                Ok(server::Error::StreamNotFound) => StatusCode::NOT_FOUND.into_response(),
+                err => {
+                    let error_id = Uuid::now_v7();
+                    error!("error_id={}, user_id={} stream_id={} Error getting stream: {:?}", error_id, user.id, stream_id, err);
+
+                    let body = ApiError {
+                        id: error_id,
+                        title: "Internal server error".to_string(),
+                        detail: None,
+                        source: None,
+                    }.into_document();
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json::from(body)).into_response()
+                }
             }
         }
     }
 }
 
-async fn delete_stream(state: State<Arc<AppState>>, Extension(user): Extension<User>, Path(stream_id): Path<String>) -> impl IntoResponse {
+async fn delete_stream(state: State<Arc<AppState>>, Extension(user): Extension<User>, Path(stream_id): Path<String>) -> Response {
     let delete_result = state.delete_stream(&user.id, &stream_id);
 
     match delete_result {
-        Ok(true) => StatusCode::NO_CONTENT,
-        Ok(false) => StatusCode::NOT_FOUND,
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => StatusCode::NOT_FOUND.into_response(),
         Err(err) => {
-            error!("user_id={} stream_id={} Error deleting stream: {}", user.id, stream_id, err);
-            StatusCode::INTERNAL_SERVER_ERROR
+            let error_id = Uuid::now_v7();
+            error!("error_id={}, user_id={} stream_id={} Error deleting stream: {}", error_id, user.id, stream_id, err);
+
+            let body = ApiError {
+                id: error_id,
+                title: "Internal server error".to_string(),
+                detail: None,
+                source: None,
+            }.into_document();
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json::from(body)).into_response()
         }
     }
+}
+
+#[derive(Deserialize, Debug)]
+struct PostEventParams {
+    expected_revision: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(untagged)]
+enum PostEventPayload {
+    Single(Event),
+    Batch(Vec<Event>),
 }
 
 async fn post_event(
@@ -297,10 +346,13 @@ async fn post_event(
         let revision_result = parse_expected_revision(revision_param.as_str());
 
         if revision_result.is_err() {
+            let error_id = Uuid::now_v7();
+            debug!("error_id={}, Failed to post event: {:?}", error_id, revision_result);
             let body = ApiError {
+                id: error_id,
                 title: "Invalid parameter".to_string(),
-                detail: Some("expected_revision is invalid.".to_string()),
-                source: ApiErrorSource::query("expected_revision"),
+                detail: Some(format!("expected_revision is invalid. Got {:?}", revision_result)),
+                source: Some(ApiErrorSource::query("expected_revision")),
             }.into_document();
             return (StatusCode::UNAUTHORIZED, Json::from(body)).into_response()
         }
@@ -322,13 +374,49 @@ async fn post_event(
                 .body(Body::from(""))
                 .unwrap();
         }
-        Err(_err) => {
-            let body = ApiError {
-                title: "Internal server error".to_string(),
-                detail: None,
-                source: ApiErrorSource::query("expected_revision"),
-            }.into_document();
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json::from(body)).into_response()
+        Err(err) => {
+            let error_id = Uuid::now_v7();
+            debug!("error_id={}, Failed to post event: {:?}", error_id, err);
+
+            match err.downcast::<db::Error>() {
+                Ok(db::Error::RevisionMismatch) => {
+                    let body = ApiError {
+                        id: error_id,
+                        title: "Revision mismatch".to_string(),
+                        detail: Some("expected revision did not match actual revision".to_string()),
+                        source: Some(ApiErrorSource::query("expected_revision")),
+                    }.into_document();
+                    return (StatusCode::CONFLICT, Json::from(body)).into_response()
+                },
+                Ok(db::Error::SourceIdConflict) => {
+                    let body = ApiError {
+                        id: error_id,
+                        title: "Source/ID conflict".to_string(),
+                        detail: Some("this stream already contains an event with that source and id field. According to the CloudEvents spec, those fields in combination must be unique".to_string()),
+                        source: None,
+                    }.into_document();
+                    return (StatusCode::CONFLICT, Json::from(body)).into_response()
+                },
+                Ok(db::Error::Stopped) => {
+                    let body = ApiError {
+                        id: error_id,
+                        title: "Stopped stream".to_string(),
+                        detail: Some("this stream is stopped and is not accepting requests".to_string()),
+                        source: None,
+                    }.into_document();
+                    return (StatusCode::CONFLICT, Json::from(body)).into_response()
+                },
+                err => {
+                    error!("error_id={}, Failed to post event: {:?}", error_id, err);
+                    let body = ApiError {
+                        id: error_id,
+                        title: "Internal server error".to_string(),
+                        detail: None,
+                        source: None,
+                    }.into_document();
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json::from(body)).into_response()
+                }
+            }
         }
     }
 }
