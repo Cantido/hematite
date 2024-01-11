@@ -1,0 +1,32 @@
+meta {
+  name: Create event
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/streams/asdf/events
+  body: json
+  auth: none
+}
+
+auth:bearer {
+  token: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiYXVkIjoiaGVtYXRpdGUiLCJpYXQiOjE3MDQ3NTY3NTAsImV4cCI6OTk5OTk5OTk5OX0.am-46Z8g0-Ou-lcBPtm8hymjdZYWBl1qfYeFfvTO8CI
+}
+
+body:json {
+  [{
+      "specversion" : "1.0",
+      "type" : "com.example.someevent",
+      "source" : "/mycontext",
+      "id" : "{{uuid}}",
+      "time" : "2018-04-05T17:31:00Z",
+      "data" : "data!"
+  }]
+}
+
+script:pre-request {
+  const { v4 } = require('uuid');
+  
+  bru.setVar("uuid", v4());
+}

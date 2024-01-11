@@ -1,0 +1,30 @@
+meta {
+  name: Create event expecting revision
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/streams/asdf/events?expected_revision=0
+  body: json
+  auth: none
+}
+
+query {
+  expected_revision: 0
+}
+
+auth:bearer {
+  token: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiYXVkIjoiaGVtYXRpdGUiLCJpYXQiOjE3MDQ3NTY3NTAsImV4cCI6OTk5OTk5OTk5OX0.am-46Z8g0-Ou-lcBPtm8hymjdZYWBl1qfYeFfvTO8CI
+}
+
+body:json {
+  [{
+      "specversion" : "1.0",
+      "type" : "com.example.someevent",
+      "source" : "/mycontext",
+      "id" : "7",
+      "time" : "2018-04-05T17:31:00Z",
+      "data" : "data!"
+  }]
+}
