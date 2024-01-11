@@ -264,7 +264,6 @@ async fn get_stream(state: State<Arc<AppState>>, Extension(user): Extension<User
         }
         Err(err) => {
             match err.downcast::<Error>() {
-                Ok(Error::UserNotFound) => StatusCode::NOT_FOUND.into_response(),
                 Ok(Error::StreamNotFound) => StatusCode::NOT_FOUND.into_response(),
                 _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
             }
