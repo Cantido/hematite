@@ -176,8 +176,9 @@ impl AppState {
     }
 
     pub fn insert_event(&self, user_id: &str, stream_id: &str, event: Event, revision: ExpectedRevision) -> Result<u64> {
-        self.initialize_database(user_id, stream_id)?;
-        self.start_database(user_id, stream_id)?;
+        if self.initialize_database(user_id, stream_id)? {
+            self.start_database(user_id, stream_id)?;
+        }
 
         let users = self.streams.read().unwrap();
         let user_streams = users.get(user_id).ok_or(Error::UserNotFound)?;
@@ -188,8 +189,9 @@ impl AppState {
     }
 
     pub fn insert_event_many(&self, user_id: &str, stream_id: &str, events: Vec<Event>, revision: ExpectedRevision) -> Result<u64> {
-        self.initialize_database(user_id, stream_id)?;
-        self.start_database(user_id, stream_id)?;
+        if self.initialize_database(user_id, stream_id)? {
+            self.start_database(user_id, stream_id)?;
+        }
 
         let users = self.streams.read().unwrap();
         let user_streams = users.get(user_id).ok_or(Error::UserNotFound)?;

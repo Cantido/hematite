@@ -66,14 +66,27 @@ struct ApiError {
     source: ApiErrorSource,
 }
 
+impl ApiError {
+    fn into_document(self) -> ApiErrorDocument {
+        ApiErrorDocument::with_error(self)
+    }
+}
+
 #[derive(Debug, Serialize)]
-#[serde(untagged)]
-enum ApiDocument<T> {
-    DataDocument {
-        data: Option<ApiResource<T>>,
-    },
-    ErrorDocument {
-        errors: Option<Vec<ApiError>>,
+struct ApiDataDocument<T> {
+    data: Option<ApiResource<T>>,
+}
+
+#[derive(Debug, Serialize)]
+struct ApiErrorDocument {
+    errors: Option<Vec<ApiError>>,
+}
+
+impl ApiErrorDocument {
+    fn with_error(error: ApiError) -> Self {
+        Self {
+            errors: Some(vec![error]),
+        }
     }
 }
 
@@ -132,13 +145,11 @@ async fn auth(mut req: Request, next: Next) -> Result<Response, Response> {
         if let Some(auth_token) = auth_token {
             auth_token
         } else {
-            let body: ApiDocument<()> = ApiDocument::ErrorDocument {
-                errors: Some(vec![ApiError {
-                    title: "Not authenticated".to_string(),
-                    detail: Some("A Bearer token is required to access this API.".to_string()),
-                    source: ApiErrorSource::header("Authorization"),
-                }])
-            };
+            let body = ApiError {
+                title: "Not authenticated".to_string(),
+                detail: Some("A Bearer token is required to access this API.".to_string()),
+                source: ApiErrorSource::header("Authorization"),
+            }.into_document();
 
             return Err((StatusCode::UNAUTHORIZED, Json::from(body)).into_response());
         };
@@ -147,13 +158,11 @@ async fn auth(mut req: Request, next: Next) -> Result<Response, Response> {
         req.extensions_mut().insert(current_user);
         Ok(next.run(req).await)
     } else {
-        let body: ApiDocument<()> = ApiDocument::ErrorDocument {
-            errors: Some(vec![ApiError {
-                title: "Not authenticated".to_string(),
-                detail: Some("Bearer token is invalid.".to_string()),
-                source: ApiErrorSource::header("Authorization"),
-            }])
-        };
+        let body = ApiError {
+            title: "Not authenticated".to_string(),
+            detail: Some("Bearer token is invalid.".to_string()),
+            source: ApiErrorSource::header("Authorization"),
+        }.into_document();
 
         return Err((StatusCode::UNAUTHORIZED, Json::from(body)).into_response());
     }
@@ -205,7 +214,7 @@ async fn get_stream(state: State<Arc<AppState>>, Extension(user): Extension<User
 
     match get_result {
         Ok(stream) => {
-            let body = ApiDocument::DataDocument {
+            let body = ApiDataDocument {
                 data: Some(ApiResource {
                     attributes: Some(stream),
                 }),
@@ -243,7 +252,7 @@ async fn post_event(
     stream: Path<String>,
     query_params: Query<PostEventParams>,
     payload: Json<PostEventPayload>,
-) -> impl IntoResponse {
+) -> Response {
     let revision = {
         let default_revision = "any".to_owned();
         let revision_param = query_params.expected_revision.clone().unwrap_or(default_revision);
@@ -254,10 +263,8 @@ async fn post_event(
                 title: "Invalid parameter".to_string(),
                 detail: Some("expected_revision is invalid.".to_string()),
                 source: ApiErrorSource::query("expected_revision"),
-            };
-            let mut resp = Json::from(body).into_response();
-            *resp.status_mut() = StatusCode::UNAUTHORIZED;
-            return resp
+            }.into_document();
+            return (StatusCode::UNAUTHORIZED, Json::from(body)).into_response()
         }
 
         revision_result.unwrap()
@@ -282,10 +289,8 @@ async fn post_event(
                 title: "Internal server error".to_string(),
                 detail: None,
                 source: ApiErrorSource::query("expected_revision"),
-            };
-            let mut resp = Json::from(body).into_response();
-            *resp.status_mut() = StatusCode::CONFLICT;
-            return resp
+            }.into_document();
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json::from(body)).into_response()
         }
     }
 }
