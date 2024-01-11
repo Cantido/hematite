@@ -1,5 +1,4 @@
 use axum::{
-    body::Body,
     Extension,
     extract::{
         Json,
@@ -117,7 +116,7 @@ async fn health(state: State<Arc<AppState>>) -> Response {
     let health = state.check_health();
 
     return (
-        [(header::CACHE_CONTROL, "max-age=60")],
+        [(header::CACHE_CONTROL, "public, max-age=60")],
         Json::from(health),
     ).into_response();
 }
@@ -155,7 +154,10 @@ async fn auth(mut req: Request, next: Next) -> Result<Response, Response> {
 
             let resp = (
                 StatusCode::UNAUTHORIZED,
-                [(header::WWW_AUTHENTICATE, "Bearer realm=\"hematite\"")],
+                [
+                    (header::WWW_AUTHENTICATE, "Bearer realm=\"hematite\""),
+                    (header::CACHE_CONTROL, "no-cache"),
+                ],
                 Json::from(body),
             ).into_response();
 
@@ -196,7 +198,10 @@ async fn auth(mut req: Request, next: Next) -> Result<Response, Response> {
 
             let resp = (
                 StatusCode::UNAUTHORIZED,
-                [(header::WWW_AUTHENTICATE, format!("Bearer realm=\"hematite\" error=\"invalid_token\" error_description=\"{}\"", desc))],
+                [
+                    (header::WWW_AUTHENTICATE, format!("Bearer realm=\"hematite\" error=\"invalid_token\" error_description=\"{}\"", desc)),
+                    (header::CACHE_CONTROL, "no-cache".to_string()),
+                ],
                 Json::from(body),
             ).into_response();
 
@@ -224,7 +229,7 @@ async fn get_event(state: State<Arc<AppState>>, Extension(user): Extension<User>
     let event_result = state.get_event(&user.id, &stream_id, rownum);
 
     match event_result {
-        Ok(Some(event)) => return Json(event).into_response(),
+        Ok(Some(event)) => return ([(header::CACHE_CONTROL, "max-age=31536000, immutable")], Json(event)).into_response(),
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(err) => {
             let error_id = Uuid::now_v7();
@@ -236,7 +241,12 @@ async fn get_event(state: State<Arc<AppState>>, Extension(user): Extension<User>
                 detail: None,
                 source: None,
             }.into_document();
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json::from(body)).into_response()
+
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CACHE_CONTROL, "no-cache")],
+                Json::from(body),
+            ).into_response();
         },
     }
 }
@@ -248,7 +258,19 @@ async fn get_event_index(state: State<Arc<AppState>>, Extension(user): Extension
     let events_result = state.get_event_many(&user.id, &stream_id, start, limit);
 
     match events_result {
-        Ok(events) => return Json(events).into_response(),
+        Ok(events) => {
+            let cache_header =
+                if events.len() as u64 == limit {
+                    (header::CACHE_CONTROL, "max-age=31536000, immutable")
+                } else {
+                    (header::CACHE_CONTROL, "no-cache")
+                };
+
+            return (
+                [cache_header],
+                Json(events),
+            ).into_response();
+        },
         Err(err) => {
             let error_id = Uuid::now_v7();
             error!("error_id={} user_id={} stream_id={} Error getting events: {:?}", error_id, user.id, stream_id, err);
@@ -259,7 +281,12 @@ async fn get_event_index(state: State<Arc<AppState>>, Extension(user): Extension
                 detail: None,
                 source: None,
             }.into_document();
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json::from(body)).into_response()
+
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CACHE_CONTROL, "no-cache")],
+                Json::from(body),
+            ).into_response();
         },
     }
 }
@@ -273,8 +300,11 @@ async fn get_stream(state: State<Arc<AppState>>, Extension(user): Extension<User
                 attributes: Some(stream),
             }.into_document();
 
-            let resp = Json::from(body);
-            (StatusCode::OK, resp).into_response()
+            return (
+                StatusCode::OK,
+                [(header::CACHE_CONTROL, "no-cache")],
+                Json::from(body),
+            ).into_response();
         }
         Err(err) => {
             match err.downcast::<server::Error>() {
@@ -289,7 +319,12 @@ async fn get_stream(state: State<Arc<AppState>>, Extension(user): Extension<User
                         detail: None,
                         source: None,
                     }.into_document();
-                    return (StatusCode::INTERNAL_SERVER_ERROR, Json::from(body)).into_response()
+
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        [(header::CACHE_CONTROL, "no-cache")],
+                        Json::from(body),
+                    ).into_response()
                 }
             }
         }
@@ -312,7 +347,12 @@ async fn delete_stream(state: State<Arc<AppState>>, Extension(user): Extension<U
                 detail: None,
                 source: None,
             }.into_document();
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json::from(body)).into_response()
+
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CACHE_CONTROL, "no-cache")],
+                Json::from(body),
+            ).into_response();
         }
     }
 }
@@ -350,7 +390,12 @@ async fn post_event(
                 detail: Some(format!("expected_revision is invalid. Got {:?}", revision_result)),
                 source: Some(ApiErrorSource::query("expected_revision")),
             }.into_document();
-            return (StatusCode::UNAUTHORIZED, Json::from(body)).into_response()
+
+            return (
+                StatusCode::UNAUTHORIZED,
+                [(header::CACHE_CONTROL, "no-cache")],
+                Json::from(body),
+            ).into_response();
         }
 
         revision_result.unwrap()
@@ -363,11 +408,13 @@ async fn post_event(
 
     match result {
         Ok(rownum) => {
-            return Response::builder()
-                .status(StatusCode::CREATED)
-                .header(header::CONTENT_LOCATION, format!("http://localhost:8080/streams/{}/events/{}", stream_id, rownum))
-                .body(Body::empty())
-                .unwrap();
+            return (
+                StatusCode::CREATED,
+                [
+                    (header::CACHE_CONTROL, "no-cache"),
+                    (header::CONTENT_LOCATION, &format!("http://localhost:8080/streams/{}/events/{}", stream_id, rownum).to_string()),
+                ],
+            ).into_response();
         }
         Err(err) => {
             let error_id = Uuid::now_v7();
@@ -381,7 +428,12 @@ async fn post_event(
                         detail: Some("expected revision did not match actual revision".to_string()),
                         source: Some(ApiErrorSource::query("expected_revision")),
                     }.into_document();
-                    return (StatusCode::CONFLICT, Json::from(body)).into_response()
+
+                    return (
+                        StatusCode::CONFLICT,
+                        [(header::CACHE_CONTROL, "no-cache")],
+                        Json::from(body),
+                    ).into_response();
                 },
                 Ok(db::Error::SourceIdConflict) => {
                     let body = ApiError {
@@ -390,7 +442,12 @@ async fn post_event(
                         detail: Some("this stream already contains an event with that source and id field. According to the CloudEvents spec, those fields in combination must be unique".to_string()),
                         source: None,
                     }.into_document();
-                    return (StatusCode::CONFLICT, Json::from(body)).into_response()
+
+                    return (
+                        StatusCode::CONFLICT,
+                        [(header::CACHE_CONTROL, "no-cache")],
+                        Json::from(body),
+                    ).into_response();
                 },
                 Ok(db::Error::Stopped) => {
                     let body = ApiError {
@@ -399,7 +456,12 @@ async fn post_event(
                         detail: Some("this stream is stopped and is not accepting requests".to_string()),
                         source: None,
                     }.into_document();
-                    return (StatusCode::CONFLICT, Json::from(body)).into_response()
+
+                    return (
+                        StatusCode::CONFLICT,
+                        [(header::CACHE_CONTROL, "no-cache")],
+                        Json::from(body),
+                    ).into_response();
                 },
                 Err(err) => {
                     error!("error_id={} Failed to post event: {:?}", error_id, err);
@@ -409,7 +471,12 @@ async fn post_event(
                         detail: None,
                         source: None,
                     }.into_document();
-                    return (StatusCode::INTERNAL_SERVER_ERROR, Json::from(body)).into_response()
+
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        [(header::CACHE_CONTROL, "no-cache")],
+                        Json::from(body),
+                    ).into_response();
                 }
             }
         }
