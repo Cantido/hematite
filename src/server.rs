@@ -29,6 +29,7 @@ pub enum Error {
 }
 
 pub type UserId = String;
+pub type StreamId = String;
 
 #[derive(Clone, Debug)]
 pub struct User {
@@ -52,7 +53,7 @@ pub struct ApiHealth {
 }
 
 type UserMap = HashMap<UserId, StreamMap>;
-type StreamMap = HashMap<String, Mutex<Database>>;
+type StreamMap = HashMap<StreamId, Mutex<Database>>;
 
 pub struct AppState {
     pub streams_path: PathBuf,
@@ -73,7 +74,7 @@ impl AppState {
         {
             if let Ok(user_dir) = user_dir_result {
                 let user_path = user_dir.path();
-                let user_id: UserId = user_path.file_stem().unwrap().to_str().unwrap().to_string();
+                let user_id: UserId = user_path.file_stem().unwrap().to_str().unwrap().parse()?;
 
                 state.initialize_user(&user_id)?;
 
@@ -88,8 +89,9 @@ impl AppState {
                         let stream_id_bytes = BASE32_NOPAD
                             .decode(encoded_stream_id.as_bytes())
                             .with_context(|| format!("Expected file in stream dir to have a Base32 no-pad encoded filename, but it was {}", encoded_stream_id))?;
-                        let stream_id = str::from_utf8(stream_id_bytes.as_slice())
-                            .with_context(|| format!("Failed to convert stream file name into into string stream ID"))?;
+                        let stream_id: StreamId = str::from_utf8(stream_id_bytes.as_slice())
+                            .with_context(|| format!("Failed to convert stream file name into into string stream ID"))?
+                            .to_string();
 
                         state.initialize_database(&user_id, &stream_id)?;
                         state.start_database(&user_id, &stream_id)?;
@@ -105,7 +107,7 @@ impl AppState {
         ApiHealth { status: HealthStatus::Pass }
     }
 
-    fn initialize_user(&self, user_id: &str) -> Result<bool> {
+    fn initialize_user(&self, user_id: &UserId) -> Result<bool> {
         let mut users = self.streams.write().unwrap();
 
         let init_user = !users.contains_key(user_id);
@@ -113,17 +115,17 @@ impl AppState {
         if init_user {
             debug!("user_id={} msg=\"Initializing user\"", user_id);
 
-            let path = self.streams_path.join(user_id);
+            let path = self.streams_path.join(user_id.to_string());
             fs::create_dir_all(&path)
                 .with_context(|| format!("Could not create user directory at {:?}", path))?;
 
-            users.insert(user_id.to_string(), HashMap::new());
+            users.insert(user_id.clone(), HashMap::new());
         }
 
         Ok(init_user)
     }
 
-    fn initialize_database(&self, user_id: &str, stream_id: &str) -> Result<bool> {
+    fn initialize_database(&self, user_id: &UserId, stream_id: &StreamId) -> Result<bool> {
         let mut streams_mut = self.streams.write().unwrap();
         let stream_map = streams_mut.get_mut(user_id).ok_or(Error::UserNotFound)?;
 
@@ -136,19 +138,19 @@ impl AppState {
 
             let path =
                 self.streams_path
-                .join(user_id)
+                .join(user_id.to_string())
                 .join(stream_file_name)
                 .with_extension("hemadb");
 
             let db = Database::new(&path);
 
-            stream_map.insert(stream_id.to_owned(), Mutex::new(db));
+            stream_map.insert(stream_id.clone(), Mutex::new(db));
         }
 
         Ok(init_db)
     }
 
-    fn start_database(&self, user_id: &str, stream_id: &str) -> Result<bool> {
+    fn start_database(&self, user_id: &UserId, stream_id: &StreamId) -> Result<bool> {
         let users = self.streams.read().unwrap();
         let streams = users.get(user_id).ok_or(Error::UserNotFound)?;
         let db = streams.get(stream_id).ok_or(Error::StreamNotFound)?;
@@ -157,7 +159,7 @@ impl AppState {
         result
     }
 
-    pub fn get_event(&self, user_id: &str, stream_id: &str, rownum: u64) -> Result<Option<Event>> {
+    pub fn get_event(&self, user_id: &UserId, stream_id: &StreamId, rownum: u64) -> Result<Option<Event>> {
         let users = self.streams.read().unwrap();
         let user_streams = users.get(user_id).ok_or(Error::UserNotFound)?;
         let db = user_streams.get(stream_id).ok_or(Error::StreamNotFound)?;
@@ -166,7 +168,7 @@ impl AppState {
         result
     }
 
-    pub fn get_event_many(&self, user_id: &str, stream_id: &str, start: u64, limit: u64) -> Result<Vec<Event>> {
+    pub fn get_event_many(&self, user_id: &UserId, stream_id: &StreamId, start: u64, limit: u64) -> Result<Vec<Event>> {
         let users = self.streams.read().unwrap();
         let user_streams = users.get(user_id).ok_or(Error::UserNotFound)?;
         let db = user_streams.get(stream_id).ok_or(Error::StreamNotFound)?;
@@ -175,7 +177,7 @@ impl AppState {
         result
     }
 
-    pub fn insert_event(&self, user_id: &str, stream_id: &str, event: Event, revision: ExpectedRevision) -> Result<u64> {
+    pub fn insert_event(&self, user_id: &UserId, stream_id: &StreamId, event: Event, revision: ExpectedRevision) -> Result<u64> {
         if self.initialize_database(user_id, stream_id)? {
             self.start_database(user_id, stream_id)?;
         }
@@ -188,7 +190,7 @@ impl AppState {
         result
     }
 
-    pub fn insert_event_many(&self, user_id: &str, stream_id: &str, events: Vec<Event>, revision: ExpectedRevision) -> Result<u64> {
+    pub fn insert_event_many(&self, user_id: &UserId, stream_id: &StreamId, events: Vec<Event>, revision: ExpectedRevision) -> Result<u64> {
         if self.initialize_database(user_id, stream_id)? {
             self.start_database(user_id, stream_id)?;
         }
@@ -201,7 +203,7 @@ impl AppState {
         result
     }
 
-    pub fn get_stream(&self, user_id: &str, stream_id: &str) -> Result<Stream> {
+    pub fn get_stream(&self, user_id: &UserId, stream_id: &StreamId) -> Result<Stream> {
         let users = self.streams.read().unwrap();
         let user_streams = users.get(user_id).ok_or(Error::UserNotFound)?;
         let db_lock = user_streams.get(stream_id).ok_or(Error::StreamNotFound)?;
@@ -216,7 +218,7 @@ impl AppState {
         })
     }
 
-    pub fn delete_stream(&self, user_id: &str, stream_id: &str) -> Result<bool> {
+    pub fn delete_stream(&self, user_id: &UserId, stream_id: &StreamId) -> Result<bool> {
         let stream_exists = {
             self.streams
                 .read()

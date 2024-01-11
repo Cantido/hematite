@@ -215,9 +215,13 @@ fn authorize_current_user(token: &str) -> Result<User> {
     let mut validation = Validation::default();
     validation.set_audience(&["hematite"]);
 
-    let token_result = decode::<Claims>(&token, &DecodingKey::from_secret(&secret.into_bytes()), &validation);
+    let token_result = decode::<Claims>(&token, &DecodingKey::from_secret(&secret.into_bytes()), &validation)?;
 
-    Ok(token_result.map(|t| User{id: t.claims.sub})?)
+    if let Ok(user_id) = token_result.claims.sub.parse() {
+        Ok(User{id: user_id})
+    } else {
+        bail!("User ID is not a valid UUID")
+    }
 }
 
 async fn get_event(state: State<Arc<AppState>>, Extension(user): Extension<User>, stream: Path<(String, u64)>) -> Response {
