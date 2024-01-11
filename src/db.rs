@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::fs::{File, self};
 use std::io::prelude::*;
 use std::io::{self, BufRead};
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -87,6 +88,14 @@ impl Database {
                 return Ok(true);
             }
         }
+    }
+
+    pub fn last_modified(&self) -> Result<i64> {
+       let mtime = fs::metadata(&self.path)
+           .with_context(|| format!("Failed to access mtime of DB path {:?}", &self.path))?
+           .mtime();
+
+        Ok(mtime)
     }
 
     pub fn revision(&self) -> u64 {

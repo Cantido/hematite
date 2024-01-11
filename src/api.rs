@@ -26,6 +26,7 @@ use jsonwebtoken::{
 };
 use log::{error, debug};
 use serde::{Deserialize, Serialize};
+use time::{OffsetDateTime, format_description::well_known::Rfc2822};
 use uuid::Uuid;
 use std::{
     collections::HashMap,
@@ -296,13 +297,19 @@ async fn get_stream(state: State<Arc<AppState>>, Extension(user): Extension<User
 
     match get_result {
         Ok(stream) => {
+            let last_modified = OffsetDateTime::from_unix_timestamp(stream.last_modified).unwrap().format(&Rfc2822).unwrap();
+
             let body = ApiResource {
                 attributes: Some(stream),
             }.into_document();
 
+
             return (
                 StatusCode::OK,
-                [(header::CACHE_CONTROL, "no-cache")],
+                [
+                    (header::CACHE_CONTROL, "no-cache"),
+                    (header::LAST_MODIFIED, &last_modified),
+                ],
                 Json::from(body),
             ).into_response();
         }
