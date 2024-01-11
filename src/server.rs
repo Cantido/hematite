@@ -1,12 +1,8 @@
 use std::{
-    collections::HashMap,
     fs,
     path::PathBuf,
     str,
-    sync::{
-        Mutex,
-        RwLock,
-    }
+    sync::Mutex,
 };
 use anyhow::{Context, Result};
 use cloudevents::Event;
