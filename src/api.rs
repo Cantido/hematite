@@ -228,7 +228,7 @@ async fn get_event(state: State<Arc<AppState>>, Extension(user): Extension<User>
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(err) => {
             let error_id = Uuid::now_v7();
-            error!("error_id={}, user_id={} stream_id={} Error getting event: {:?}", error_id, user.id, stream_id, err);
+            error!("error_id={} user_id={} stream_id={} Error getting event: {:?}", error_id, user.id, stream_id, err);
 
             let body = ApiError {
                 id: error_id,
@@ -251,7 +251,7 @@ async fn get_event_index(state: State<Arc<AppState>>, Extension(user): Extension
         Ok(events) => return Json(events).into_response(),
         Err(err) => {
             let error_id = Uuid::now_v7();
-            error!("error_id={}, user_id={} stream_id={} Error getting events: {:?}", error_id, user.id, stream_id, err);
+            error!("error_id={} user_id={} stream_id={} Error getting events: {:?}", error_id, user.id, stream_id, err);
 
             let body = ApiError {
                 id: error_id,
@@ -281,7 +281,7 @@ async fn get_stream(state: State<Arc<AppState>>, Extension(user): Extension<User
                 Ok(server::Error::StreamNotFound) => StatusCode::NOT_FOUND.into_response(),
                 Err(err) => {
                     let error_id = Uuid::now_v7();
-                    error!("error_id={}, user_id={} stream_id={} Error getting stream: {:?}", error_id, user.id, stream_id, err);
+                    error!("error_id={} user_id={} stream_id={} Error getting stream: {:?}", error_id, user.id, stream_id, err);
 
                     let body = ApiError {
                         id: error_id,
@@ -304,7 +304,7 @@ async fn delete_stream(state: State<Arc<AppState>>, Extension(user): Extension<U
         Ok(false) => StatusCode::NOT_FOUND.into_response(),
         Err(err) => {
             let error_id = Uuid::now_v7();
-            error!("error_id={}, user_id={} stream_id={} Error deleting stream: {}", error_id, user.id, stream_id, err);
+            error!("error_id={} user_id={} stream_id={} Error deleting stream: {}", error_id, user.id, stream_id, err);
 
             let body = ApiError {
                 id: error_id,
@@ -343,7 +343,7 @@ async fn post_event(
 
         if revision_result.is_err() {
             let error_id = Uuid::now_v7();
-            debug!("error_id={}, Failed to post event: {:?}", error_id, revision_result);
+            debug!("error_id={} Failed to post event: {:?}", error_id, revision_result);
             let body = ApiError {
                 id: error_id,
                 title: "Invalid parameter".to_string(),
@@ -371,7 +371,7 @@ async fn post_event(
         }
         Err(err) => {
             let error_id = Uuid::now_v7();
-            debug!("error_id={}, Failed to post event: {:?}", error_id, err);
+            debug!("error_id={} Failed to post event: {:?}", error_id, err);
 
             match err.downcast::<db::Error>() {
                 Ok(db::Error::RevisionMismatch) => {
@@ -402,7 +402,7 @@ async fn post_event(
                     return (StatusCode::CONFLICT, Json::from(body)).into_response()
                 },
                 Err(err) => {
-                    error!("error_id={}, Failed to post event: {:?}", error_id, err);
+                    error!("error_id={} Failed to post event: {:?}", error_id, err);
                     let body = ApiError {
                         id: error_id,
                         title: "Internal server error".to_string(),

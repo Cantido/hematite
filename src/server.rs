@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use cloudevents::Event;
 use dashmap::DashMap;
 use data_encoding::BASE32_NOPAD;
-use log::debug;
+use log::{debug, info};
 use serde::Serialize;
 use crate::db::{
     Database,
@@ -66,6 +66,8 @@ impl AppState {
             streams: DashMap::new(),
         };
 
+        info!("Initializing streams...");
+
         for user_dir_result in state
             .streams_path
             .read_dir()
@@ -98,6 +100,8 @@ impl AppState {
                 }
             }
         }
+
+        info!("Done initializing streams");
 
         Ok(state)
     }
