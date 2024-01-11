@@ -22,9 +22,10 @@ use cloudevents::Event;
 use jsonwebtoken::{
     decode,
     DecodingKey,
+    errors::ErrorKind,
     Validation,
 };
-use log::error;
+use log::{error, debug};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -161,24 +162,54 @@ async fn auth(mut req: Request, next: Next) -> Result<Response, Response> {
                 source: ApiErrorSource::header("Authorization"),
             }.into_document();
 
-            return Err((StatusCode::UNAUTHORIZED, Json::from(body)).into_response());
+            let resp = (
+                StatusCode::UNAUTHORIZED,
+                [(header::WWW_AUTHENTICATE, "Bearer realm=\"hematite\"")],
+                Json::from(body),
+            ).into_response();
+
+            return Err(resp);
         };
 
-    if let Some(current_user) = authorize_current_user(auth_token) {
-        req.extensions_mut().insert(current_user);
-        Ok(next.run(req).await)
-    } else {
-        let body = ApiError {
-            title: "Not authenticated".to_string(),
-            detail: Some("Bearer token is invalid.".to_string()),
-            source: ApiErrorSource::header("Authorization"),
-        }.into_document();
+    match authorize_current_user(auth_token) {
+        Ok(current_user) => {
+            req.extensions_mut().insert(current_user);
+            return Ok(next.run(req).await);
+        },
+        Err(err) => {
+            let desc =
+                if let Ok(jwt_error) = err.downcast::<jsonwebtoken::errors::Error>() {
+                    let kind = jwt_error.kind();
 
-        return Err((StatusCode::UNAUTHORIZED, Json::from(body)).into_response());
+                    debug!("Token validation failed with reason: {:?}", kind);
+                    match kind {
+                        ErrorKind::InvalidAudience => "token has an invalid audience",
+                        ErrorKind::ExpiredSignature => "token has expired",
+                        ErrorKind::InvalidSignature => "token has an invalid signature",
+                        _ => "Bearer token is invalid"
+                    }
+                } else {
+                    "Bearer token is invalid"
+                };
+
+            let body = ApiError {
+                title: "Not authenticated".to_string(),
+                detail: Some(desc.to_string()),
+                source: ApiErrorSource::header("Authorization"),
+            }.into_document();
+
+            let resp = (
+                StatusCode::UNAUTHORIZED,
+                [(header::WWW_AUTHENTICATE, format!("Bearer realm=\"hematite\" error=\"invalid_token\" error_description=\"{}\"", desc))],
+                Json::from(body),
+            ).into_response();
+
+            return Err(resp);
+        }
     }
 }
 
-fn authorize_current_user(token: &str) -> Option<User> {
+fn authorize_current_user(token: &str) -> Result<User> {
     let secret = std::env::var("HEMATITE_JWT_SECRET").expect("Env var HEMATITE_JWT_SECRET is required.");
 
     let mut validation = Validation::default();
@@ -186,11 +217,7 @@ fn authorize_current_user(token: &str) -> Option<User> {
 
     let token_result = decode::<Claims>(&token, &DecodingKey::from_secret(&secret.into_bytes()), &validation);
 
-    if let Ok(token) = token_result {
-        return Some(User{id: token.claims.sub})
-    } else {
-        None
-    }
+    Ok(token_result.map(|t| User{id: t.claims.sub})?)
 }
 
 async fn get_event(state: State<Arc<AppState>>, Extension(user): Extension<User>, stream: Path<(String, u64)>) -> Response {
