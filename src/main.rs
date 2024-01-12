@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting Hematite DB version {}", VERSION);
     info!("Stream database directory: {}", streams_dir.display());
 
-    let state = Arc::new(AppState::new(streams_dir)?);
+    let state = Arc::new(AppState::new(streams_dir).await?);
 
     let app = Router::new()
         .nest("/streams", api::stream_routes())

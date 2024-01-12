@@ -2,13 +2,14 @@ use std::{
     fs,
     path::PathBuf,
     str,
-    sync::Mutex,
+    sync::{Mutex, Arc},
 };
 use anyhow::{Context, Result};
 use cloudevents::Event;
 use dashmap::DashMap;
 use data_encoding::BASE32_NOPAD;
-use tracing::{debug, info};
+use tokio::task::JoinSet;
+use tracing::{debug, error, info};
 use serde::Serialize;
 use crate::db::{
     Database,
@@ -53,7 +54,7 @@ pub struct ApiHealth {
     pub status: HealthStatus,
 }
 
-type StreamMap = DashMap<UserStreamId, Mutex<Database>>;
+type StreamMap = DashMap<UserStreamId, Arc<Mutex<Database>>>;
 
 #[derive(Debug)]
 pub struct AppState {
@@ -63,7 +64,7 @@ pub struct AppState {
 
 impl AppState {
     #[tracing::instrument]
-    pub fn new(streams_path: PathBuf) -> Result<Self> {
+    pub async fn new(streams_path: PathBuf) -> Result<Self> {
         let state = AppState {
             streams_path,
             streams: DashMap::new(),
@@ -98,8 +99,23 @@ impl AppState {
                         let user_stream_id = user_stream_id(&user_id, &stream_id);
 
                         state.initialize_database(&user_stream_id)?;
-                        state.start_database(&user_stream_id)?;
                     }
+                }
+            }
+
+            let mut tasks = JoinSet::new();
+
+            for stream_id in state.streams.iter() {
+                let db = stream_id.value().clone();
+
+                tasks.spawn(async move {
+                    db.lock().unwrap().start()
+                });
+            }
+
+            while let Some(res) = tasks.join_next().await {
+                if let Err(err) = res.unwrap() {
+                    error!("Failed to start database: {}", err);
                 }
             }
         }
@@ -135,7 +151,7 @@ impl AppState {
 
             let db = Database::new(&db_path);
 
-            self.streams.insert(stream_id.clone(), Mutex::new(db));
+            self.streams.insert(stream_id.clone(), Arc::new(Mutex::new(db)));
         }
 
         Ok(init_db)
