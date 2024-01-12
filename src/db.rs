@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use cloudevents::event::Event;
 use cloudevents::*;
 use serde::Serialize;
@@ -107,9 +107,7 @@ impl Database {
     }
 
     pub fn query(&mut self, rownum: u64) -> Result<Option<Event>> {
-        if self.state != RunState::Running {
-            return Err(Error::Stopped.into());
-        }
+        ensure!(self.state == RunState::Running, Error::Stopped);
 
         let mut file = File::options()
             .read(true)
@@ -141,9 +139,7 @@ impl Database {
     }
 
     pub fn query_many(&mut self, start: u64, limit: u64) -> Result<Vec<Event>> {
-        if self.state != RunState::Running {
-            return Err(Error::Stopped.into());
-        }
+        ensure!(self.state == RunState::Running, Error::Stopped);
 
         let mut file = File::options()
             .read(true)
@@ -172,9 +168,7 @@ impl Database {
     }
 
     pub fn insert(&mut self, event: Event, expected_revision: ExpectedRevision) -> Result<u64> {
-        if self.state != RunState::Running {
-            return Err(Error::Stopped.into());
-        }
+        ensure!(self.state == RunState::Running, Error::Stopped);
 
         let revision_match: bool = match expected_revision {
             ExpectedRevision::Any => true,
@@ -200,9 +194,7 @@ impl Database {
         events: Vec<Event>,
         expected_revision: ExpectedRevision,
     ) -> Result<u64> {
-        if self.state != RunState::Running {
-            return Err(Error::Stopped.into());
-        }
+        ensure!(self.state == RunState::Running, Error::Stopped);
 
         let revision_match: bool = match expected_revision {
             ExpectedRevision::Any => true,
@@ -226,12 +218,7 @@ impl Database {
     }
 
     fn write_event(&mut self, event: Event) -> Result<u64> {
-        if self
-            .source_id_index
-            .contains_key(&(event.source().to_string(), event.id().to_string()))
-        {
-            return Err(Error::SourceIdConflict.into());
-        }
+        ensure!(self.source_id_index.contains_key(&(event.source().to_string(), event.id().to_string())), Error::SourceIdConflict);
 
         let mut file = File::options()
             .read(true)
