@@ -233,21 +233,28 @@ async fn get_event(state: State<Arc<AppState>>, Extension(user): Extension<User>
         Ok(Some(event)) => return ([(header::CACHE_CONTROL, "max-age=31536000, immutable")], Json(event)).into_response(),
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(err) => {
-            let error_id = Uuid::now_v7();
-            error!("error_id={} user_id={} stream_id={} Error getting event: {:?}", error_id, user.id, stream_id, err);
+            match err.downcast::<server::Error>() {
+                Ok(server::Error::StreamNotFound) => {
+                    return StatusCode::NOT_FOUND.into_response();
+                },
+                Err(err) => {
+                    let error_id = Uuid::now_v7();
+                    error!("error_id={} user_id={} stream_id={} Error getting event: {:?}", error_id, user.id, stream_id, err);
 
-            let body = ApiError {
-                id: error_id,
-                title: "Internal server error".to_string(),
-                detail: None,
-                source: None,
-            }.into_document();
+                    let body = ApiError {
+                        id: error_id,
+                        title: "Internal server error".to_string(),
+                        detail: None,
+                        source: None,
+                    }.into_document();
 
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                [(header::CACHE_CONTROL, "no-cache")],
-                Json::from(body),
-            ).into_response();
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        [(header::CACHE_CONTROL, "no-cache")],
+                        Json::from(body),
+                    ).into_response();
+                }
+            }
         },
     }
 }
