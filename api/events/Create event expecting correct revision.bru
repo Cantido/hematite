@@ -1,13 +1,17 @@
 meta {
-  name: Create event
+  name: Create event expecting correct revision
   type: http
-  seq: 1
+  seq: 2
 }
 
 post {
-  url: {{baseUrl}}/streams/{{stream}}/events
+  url: {{baseUrl}}/streams/{{stream}}/events?expected_revision={{revision}}
   body: json
   auth: bearer
+}
+
+query {
+  expected_revision: {{revision}}
 }
 
 auth:bearer {

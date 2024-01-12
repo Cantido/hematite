@@ -5,11 +5,23 @@ meta {
 }
 
 delete {
-  url: {{baseUrl}}/streams/asdf
+  url: {{baseUrl}}/streams/{{stream}}
   body: none
   auth: bearer
 }
 
 auth:bearer {
   token: {{authToken}}
+}
+
+vars:pre-request {
+  stream: asdf
+}
+
+vars:post-response {
+  revision: -1
+}
+
+assert {
+  res.status: eq 204
 }

@@ -5,7 +5,7 @@ meta {
 }
 
 get {
-  url: {{baseUrl}}/streams/asdf/events?start=1&limit=1
+  url: {{baseUrl}}/streams/{{stream}}/events?start=1&limit=1
   body: none
   auth: bearer
 }
@@ -17,4 +17,12 @@ query {
 
 auth:bearer {
   token: {{authToken}}
+}
+
+vars:pre-request {
+  stream: asdf
+}
+
+assert {
+  res.status: eq 200
 }

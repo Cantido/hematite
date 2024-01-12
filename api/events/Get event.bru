@@ -5,11 +5,19 @@ meta {
 }
 
 get {
-  url: {{baseUrl}}/streams/asdf/events/5
+  url: {{baseUrl}}/streams/{{stream}}/events/{{revision}}
   body: none
   auth: bearer
 }
 
 auth:bearer {
   token: {{authToken}}
+}
+
+vars:pre-request {
+  stream: asdf
+}
+
+assert {
+  res.status: eq 200
 }
