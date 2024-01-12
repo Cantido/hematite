@@ -218,7 +218,7 @@ impl Database {
     }
 
     fn write_event(&mut self, event: Event) -> Result<u64> {
-        ensure!(self.source_id_index.contains_key(&(event.source().to_string(), event.id().to_string())), Error::SourceIdConflict);
+        ensure!(!self.source_id_index.contains_key(&(event.source().to_string(), event.id().to_string())), Error::SourceIdConflict);
 
         let mut file = File::options()
             .read(true)
