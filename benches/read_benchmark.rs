@@ -1,5 +1,5 @@
 use cloudevents::event::Event;
-use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
+use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use rand::prelude::*;
 use std::path::PathBuf;
 
@@ -8,10 +8,11 @@ use hematite::db::{Database, ExpectedRevision};
 fn write_bench(c: &mut Criterion) {
     let _ = std::fs::remove_file("stream.db");
 
-    let mut db = Database::new(&PathBuf::from("stream.db")).expect("Could not intialize DB");
+    let mut db = Database::new(&PathBuf::from("stream.db"));
+    db.start().unwrap();
 
     for _n in 1..100_000 {
-        let mut event = Event::default();
+        let event = Event::default();
         db.insert(event, ExpectedRevision::Any)
             .expect("Could not insert value into DB");
     }
