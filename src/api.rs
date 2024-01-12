@@ -392,7 +392,7 @@ async fn post_event(
 ) -> Response {
     let revision = {
         let default_revision = "any".to_owned();
-        let revision_param = query_params.expected_revision.clone().unwrap_or(default_revision);
+        let revision_param = query_params.expected_revision.unwrap_or(default_revision);
         let revision_result = parse_expected_revision(revision_param.as_str());
 
         if revision_result.is_err() {
