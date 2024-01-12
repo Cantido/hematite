@@ -24,7 +24,7 @@ use jsonwebtoken::{
     errors::ErrorKind,
     Validation,
 };
-use log::{error, debug};
+use tracing::{error, debug};
 use serde::{Deserialize, Serialize};
 use time::{OffsetDateTime, format_description::well_known::Rfc2822};
 use uuid::Uuid;

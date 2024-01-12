@@ -35,6 +35,7 @@ pub enum ExpectedRevision {
     Exact(u64),
 }
 
+#[derive(Debug)]
 pub struct Database {
     state: RunState,
     path: PathBuf,
@@ -77,6 +78,7 @@ impl Database {
         Ok(())
     }
 
+    #[tracing::instrument]
     pub fn start(&mut self) -> Result<bool> {
         match self.state {
             RunState::Running => {
@@ -90,6 +92,7 @@ impl Database {
         }
     }
 
+    #[tracing::instrument]
     pub fn last_modified(&self) -> Result<i64> {
        let mtime = fs::metadata(&self.path)
            .with_context(|| format!("Failed to access mtime of DB path {:?}", &self.path))?
@@ -98,14 +101,17 @@ impl Database {
         Ok(mtime)
     }
 
+    #[tracing::instrument]
     pub fn revision(&self) -> u64 {
         self.primary_index.last_key_value().map_or(0, |(&k, _v)| k)
     }
 
+    #[tracing::instrument]
     pub fn state(&self) -> RunState {
         self.state.clone()
     }
 
+    #[tracing::instrument]
     pub fn query(&mut self, rownum: u64) -> Result<Option<Event>> {
         ensure!(self.state == RunState::Running, Error::Stopped);
 
@@ -138,6 +144,7 @@ impl Database {
         Ok(event)
     }
 
+    #[tracing::instrument]
     pub fn query_many(&mut self, start: u64, limit: u64) -> Result<Vec<Event>> {
         ensure!(self.state == RunState::Running, Error::Stopped);
 
@@ -167,6 +174,7 @@ impl Database {
         Ok(events)
     }
 
+    #[tracing::instrument]
     pub fn insert(&mut self, event: Event, expected_revision: ExpectedRevision) -> Result<u64> {
         ensure!(self.state == RunState::Running, Error::Stopped);
 
@@ -189,6 +197,7 @@ impl Database {
         }
     }
 
+    #[tracing::instrument]
     pub fn insert_batch(
         &mut self,
         events: Vec<Event>,

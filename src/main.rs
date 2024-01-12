@@ -3,14 +3,35 @@ use hematite::{
     api,
     server::AppState,
 };
-use log::info;
+use tracing::info;
 use log4rs;
+use tracing_subscriber::{prelude::*, filter::EnvFilter, fmt, Registry};
 use std::{env, fs, path::PathBuf, str, sync::Arc};
 
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log4rs::init_file("config/log4rs.yml", Default::default()).unwrap();
+
+    let otlp_exporter = opentelemetry_otlp::new_exporter().tonic();
+
+    let tracer = opentelemetry_otlp::new_pipeline()
+        .tracing()
+        .with_exporter(otlp_exporter)
+        .install_simple()?;
+
+    let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+
+    let filter_layer = EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new("info"))?;
+
+    let subscriber =
+        Registry::default()
+            .with(filter_layer)
+            .with(telemetry)
+            .with(fmt::layer());
+
+    tracing::subscriber::set_global_default(subscriber)?;
 
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
     const STREAMS_DIR: &'static str = env!("HEMATITE_STREAMS_DIR");

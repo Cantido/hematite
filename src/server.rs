@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use cloudevents::Event;
 use dashmap::DashMap;
 use data_encoding::BASE32_NOPAD;
-use log::{debug, info};
+use tracing::{debug, info};
 use serde::Serialize;
 use crate::db::{
     Database,
@@ -55,12 +55,14 @@ pub struct ApiHealth {
 
 type StreamMap = DashMap<UserStreamId, Mutex<Database>>;
 
+#[derive(Debug)]
 pub struct AppState {
     pub streams_path: PathBuf,
     pub streams: StreamMap,
 }
 
 impl AppState {
+    #[tracing::instrument]
     pub fn new(streams_path: PathBuf) -> Result<Self> {
         let state = AppState {
             streams_path,
@@ -107,6 +109,7 @@ impl AppState {
         Ok(state)
     }
 
+    #[tracing::instrument]
     pub fn check_health(&self) -> ApiHealth {
         ApiHealth { status: HealthStatus::Pass }
     }
@@ -145,6 +148,7 @@ impl AppState {
         result
     }
 
+    #[tracing::instrument]
     pub fn get_event(&self, user_id: &UserId, stream_id: &StreamId, rownum: u64) -> Result<Option<Event>> {
         let stream_id = user_stream_id(user_id, stream_id);
         let db = self.streams.get(&stream_id).ok_or(Error::StreamNotFound)?;
@@ -153,6 +157,7 @@ impl AppState {
         result
     }
 
+    #[tracing::instrument]
     pub fn get_event_many(&self, user_id: &UserId, stream_id: &StreamId, start: u64, limit: u64) -> Result<Vec<Event>> {
         let stream_id = user_stream_id(user_id, stream_id);
         let db = self.streams.get(&stream_id).ok_or(Error::StreamNotFound)?;
@@ -161,6 +166,7 @@ impl AppState {
         result
     }
 
+    #[tracing::instrument]
     pub fn insert_event(&self, user_id: &UserId, stream_id: &StreamId, event: Event, revision: ExpectedRevision) -> Result<u64> {
         let stream_id = user_stream_id(user_id, stream_id);
         if self.initialize_database(&stream_id)? {
@@ -173,6 +179,7 @@ impl AppState {
         result
     }
 
+    #[tracing::instrument]
     pub fn insert_event_many(&self, user_id: &UserId, stream_id: &StreamId, events: Vec<Event>, revision: ExpectedRevision) -> Result<u64> {
         let stream_id = user_stream_id(user_id, stream_id);
         if self.initialize_database(&stream_id)? {
@@ -185,6 +192,7 @@ impl AppState {
         result
     }
 
+    #[tracing::instrument]
     pub fn get_stream(&self, user_id: &UserId, stream_id: &StreamId) -> Result<Stream> {
         let stream_id = user_stream_id(user_id, stream_id);
         let db_lock = self.streams.get(&stream_id).ok_or(Error::StreamNotFound)?;
@@ -201,6 +209,7 @@ impl AppState {
         })
     }
 
+    #[tracing::instrument]
     pub fn delete_stream(&self, user_id: &UserId, stream_id: &StreamId) -> Result<bool> {
         let stream_id = user_stream_id(user_id, stream_id);
 
