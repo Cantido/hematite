@@ -3,6 +3,7 @@ use cloudevents::event::Event;
 use cloudevents::*;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fs::{File, self};
 use std::io::prelude::*;
 use std::io::{self, BufRead};
@@ -35,12 +36,17 @@ pub enum ExpectedRevision {
     Exact(u64),
 }
 
-#[derive(Debug)]
 pub struct Database {
     state: RunState,
     path: PathBuf,
     primary_index: BTreeMap<u64, u64>,
     source_id_index: BTreeMap<(String, String), u64>,
+}
+
+impl fmt::Debug for Database {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Database [{:?}]", self.path)
+    }
 }
 
 impl Database {
@@ -190,7 +196,7 @@ impl Database {
         };
 
         if revision_match {
-            self.write_event(event)
+            self.write_events(&vec![event])
                 .with_context(|| format!("Failed to write event to DB at {:?}", self.path))
         } else {
             Err(Error::RevisionMismatch.into())
@@ -204,6 +210,7 @@ impl Database {
         expected_revision: ExpectedRevision,
     ) -> Result<u64> {
         ensure!(self.state == RunState::Running, Error::Stopped);
+        ensure!(!events.is_empty(), "Events list cannot be empty");
 
         let revision_match: bool = match expected_revision {
             ExpectedRevision::Any => true,
@@ -217,17 +224,26 @@ impl Database {
         };
 
         if revision_match {
-            for event in events.iter() {
-                self.write_event(event.clone())?;
-            }
-            Ok(self.primary_index.last_key_value().unwrap().0.clone())
+            self.write_events(&events)
         } else {
             Err(Error::RevisionMismatch.into())
         }
     }
 
-    fn write_event(&mut self, event: Event) -> Result<u64> {
-        ensure!(!self.source_id_index.contains_key(&(event.source().to_string(), event.id().to_string())), Error::SourceIdConflict);
+    fn write_events(&mut self, events: &Vec<Event>) -> Result<u64> {
+        ensure!(!events.is_empty(), "Events list cannot be empty");
+
+        let mut event_lengths = Vec::new();
+        let mut bytes = Vec::new();
+
+        for event in events.iter() {
+            ensure!(!self.source_id_index.contains_key(&(event.source().to_string(), event.id().to_string())), Error::SourceIdConflict);
+
+            let json = serde_json::to_string(&event).with_context(|| format!("Failed to JSONify event"))?;
+
+            event_lengths.push(bytes.len());
+            write!(&mut bytes, "{}\n", json).with_context(|| format!("Failed to write JSON bytes to Vec"))?;
+        }
 
         let mut file = File::options()
             .read(true)
@@ -239,24 +255,29 @@ impl Database {
         let position = file.seek(io::SeekFrom::End(0))
             .with_context(|| format!("Failed to seek to end of file for DB at {:?}", self.path))?;
 
-        let encoded = encode_event(&event)
-            .with_context(|| format!("Failed to encode event"))?;
-
-        file.write_all(&encoded)
+        file.write_all(&bytes)
             .with_context(|| format!("Failed to write event to file for DB at {:?}", self.path))?;
 
-        let (event_rownum, event_offset) = match self.primary_index.last_key_value() {
-            None => (0, 0),
-            Some((last_rownum, _offset)) => (last_rownum + 1, position),
-        };
+        let mut last_revision = 0;
+        let mut prev_offset = position;
 
-        self.primary_index.insert(event_rownum, event_offset);
-        self.source_id_index.insert(
-            (event.source().to_string(), event.id().to_string()),
-            event_rownum,
-        );
+        for (event, event_length) in events.iter().zip(event_lengths.iter()) {
+            let (next_event_rownum, next_event_offset) = match self.primary_index.last_key_value() {
+                None => (0, 0),
+                Some((last_rownum, _offset)) => (last_rownum + 1, prev_offset),
+            };
 
-        Ok(event_rownum)
+            prev_offset += *event_length as u64;
+            last_revision = next_event_rownum;
+
+            self.primary_index.insert(next_event_rownum, next_event_offset);
+            self.source_id_index.insert(
+                (event.source().to_string(), event.id().to_string()),
+                next_event_rownum,
+            );
+        }
+
+        Ok(last_revision)
     }
 
     pub fn delete(&mut self) -> anyhow::Result<()> {
@@ -267,14 +288,6 @@ impl Database {
 
         Ok(())
     }
-}
-
-fn encode_event(event: &Event) -> Result<Vec<u8>> {
-    let json = serde_json::to_string(&event).with_context(|| format!("Failed to JSONify event"))?;
-
-    let mut row = Vec::new();
-    write!(&mut row, "{}\n", json).with_context(|| format!("Failed to write JSON bytes to Vec"))?;
-    Ok(row)
 }
 
 fn decode_event(row: String) -> Result<Event> {
