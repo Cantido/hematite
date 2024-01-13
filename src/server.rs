@@ -2,7 +2,7 @@ use std::{
     fs,
     path::PathBuf,
     str,
-    sync::{Mutex, Arc},
+    sync::{Mutex, Arc}, fmt,
 };
 use anyhow::{Context, Result};
 use cloudevents::Event;
@@ -56,10 +56,16 @@ pub struct ApiHealth {
 
 type StreamMap = DashMap<UserStreamId, Arc<Mutex<Database>>>;
 
-#[derive(Debug)]
 pub struct AppState {
     pub streams_path: PathBuf,
     pub streams: StreamMap,
+}
+
+impl fmt::Debug for AppState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let stream_count = self.streams.len();
+        write!(f, "AppState [{} streams @ {:?}]", stream_count, self.streams_path)
+    }
 }
 
 impl AppState {
