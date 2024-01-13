@@ -260,8 +260,8 @@ async fn get_event(state: State<Arc<AppState>>, Extension(user): Extension<User>
 }
 
 async fn get_event_index(state: State<Arc<AppState>>, Extension(user): Extension<User>, Path(stream_id): Path<String>, Query(query): Query<HashMap<String, String>>) -> Response {
-    let start = query.get("start").unwrap_or(&"0".to_string()).parse().unwrap_or(0).max(0);
-    let limit = query.get("limit").unwrap_or(&"50".to_string()).parse().unwrap_or(50).min(1000);
+    let start = query.get("page[offset]").unwrap_or(&"0".to_string()).parse().unwrap_or(0).max(0);
+    let limit = query.get("page[limit]").unwrap_or(&"50".to_string()).parse().unwrap_or(50).min(1000);
 
     let events_result = state.get_event_many(&user.id, &stream_id, start, limit);
 

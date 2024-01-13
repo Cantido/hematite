@@ -5,14 +5,14 @@ meta {
 }
 
 get {
-  url: {{baseUrl}}/streams/{{stream}}/events?start=1&limit=1
+  url: {{baseUrl}}/streams/{{stream}}/events?page[offset]=1&page[limit]=1
   body: none
   auth: bearer
 }
 
 query {
-  start: 1
-  limit: 1
+  page[offset]: 1
+  page[limit]: 1
 }
 
 auth:bearer {
