@@ -118,40 +118,7 @@ impl Database {
     }
 
     #[tracing::instrument]
-    pub fn query(&mut self, rownum: u64) -> Result<Option<Event>> {
-        ensure!(self.state == RunState::Running, Error::Stopped);
-
-        let mut file = File::options()
-            .read(true)
-            .append(true)
-            .create(true)
-            .open(&self.path)
-            .with_context(|| format!("Could not open file to query DB at {:?}", self.path))?;
-
-        let row_offset = match self.primary_index.get(&rownum) {
-            Some(row_offset) => row_offset,
-            None => return Ok(None),
-        };
-
-        let _position = file
-            .seek(io::SeekFrom::Start(*row_offset))
-            .with_context(|| format!("Failed to seek to row {} (offset {}) from DB at {:?}", rownum, row_offset, self.path))?;
-
-        let event =
-            if let Some(line_result) = io::BufReader::new(&file).lines().next() {
-                let line = line_result.with_context(|| format!("Failed to read rowid {} (offset {}) from DB at {:?}", rownum, row_offset, self.path))?;
-                let event = decode_event(line).with_context(|| format!("Failed to decode row {} (offset {}) from DB at {:?}", rownum, row_offset, self.path))?;
-
-                Some(event)
-            } else {
-                None
-            };
-
-        Ok(event)
-    }
-
-    #[tracing::instrument]
-    pub fn query_many(&mut self, start: u64, limit: u64) -> Result<Vec<Event>> {
+    pub fn query(&mut self, start: u64, limit: u64) -> Result<Vec<Event>> {
         ensure!(self.state == RunState::Running, Error::Stopped);
 
         let mut file = File::options()
@@ -181,30 +148,7 @@ impl Database {
     }
 
     #[tracing::instrument]
-    pub fn insert(&mut self, event: Event, expected_revision: ExpectedRevision) -> Result<u64> {
-        ensure!(self.state == RunState::Running, Error::Stopped);
-
-        let revision_match: bool = match expected_revision {
-            ExpectedRevision::Any => true,
-            ExpectedRevision::NoStream => self.primary_index.last_key_value().is_none(),
-            ExpectedRevision::StreamExists => self.primary_index.last_key_value().is_some(),
-            ExpectedRevision::Exact(revision) => self
-                .primary_index
-                .last_key_value()
-                .map(|t| t.0)
-                .map_or(false, |r| r == &revision),
-        };
-
-        if revision_match {
-            self.write_events(&vec![event])
-                .with_context(|| format!("Failed to write event to DB at {:?}", self.path))
-        } else {
-            Err(Error::RevisionMismatch.into())
-        }
-    }
-
-    #[tracing::instrument]
-    pub fn insert_batch(
+    pub fn append(
         &mut self,
         events: Vec<Event>,
         expected_revision: ExpectedRevision,
@@ -341,12 +285,13 @@ mod tests {
 
         let event = Event::default();
 
-        let rownum = db.insert(event.clone(), ExpectedRevision::Any)
+        let rownum = db.append(vec![event.clone()], ExpectedRevision::Any)
             .expect("Could not write to the DB");
 
         let result: Event = db
-            .query(0)
+            .query(0, 1)
             .expect("Row not found")
+            .pop()
             .expect("Failed to read row");
 
         assert_eq!(rownum, 0);
@@ -364,11 +309,11 @@ mod tests {
         let event = Event::default();
 
         let rownum =
-            db.insert(event.clone(), ExpectedRevision::Any)
+            db.append(vec![event.clone()], ExpectedRevision::Any)
             .expect("Could not write to the DB");
 
         assert_eq!(rownum, 0);
-        assert!(db.insert(event.clone(), ExpectedRevision::Any).is_err());
+        assert!(db.append(vec![event.clone()], ExpectedRevision::Any).is_err());
     }
 
     #[test]
@@ -379,9 +324,9 @@ mod tests {
         let mut db = Database::new(test_file.path());
         db.start().expect("Could not start DB");
 
-        let result = db.query(0).expect("Expected success reading empty db");
+        let result = db.query(0, 1).expect("Expected success reading empty db");
 
-        assert!(result.is_none());
+        assert!(result.is_empty());
     }
 
     #[test]
@@ -394,7 +339,7 @@ mod tests {
 
         let event = Event::default();
 
-        db.insert(event, ExpectedRevision::NoStream)
+        db.append(vec![event], ExpectedRevision::NoStream)
             .expect("Could not write to the DB");
     }
 
@@ -408,9 +353,9 @@ mod tests {
 
         let event1 = Event::default();
         let event2 = Event::default();
-        db.insert(event1, ExpectedRevision::NoStream)
+        db.append(vec![event1], ExpectedRevision::NoStream)
             .expect("Could not write to the DB");
-        assert!(db.insert(event2, ExpectedRevision::NoStream).is_err());
+        assert!(db.append(vec![event2], ExpectedRevision::NoStream).is_err());
     }
 
     #[test]
@@ -423,7 +368,7 @@ mod tests {
 
         let event = Event::default();
 
-        assert!(db.insert(event, ExpectedRevision::StreamExists).is_err());
+        assert!(db.append(vec![event], ExpectedRevision::StreamExists).is_err());
     }
 
     #[test]
@@ -436,7 +381,7 @@ mod tests {
 
         let event = Event::default();
 
-        assert!(db.insert(event, ExpectedRevision::Exact(0)).is_err());
+        assert!(db.append(vec![event], ExpectedRevision::Exact(0)).is_err());
     }
 
     #[test]
@@ -449,9 +394,9 @@ mod tests {
 
         let event1 = Event::default();
         let event2 = Event::default();
-        db.insert(event1, ExpectedRevision::NoStream)
+        db.append(vec![event1], ExpectedRevision::NoStream)
             .expect("Could not write to the DB");
-        db.insert(event2, ExpectedRevision::Exact(0))
+        db.append(vec![event2], ExpectedRevision::Exact(0))
             .expect("Could not write to the DB");
     }
 
@@ -467,26 +412,27 @@ mod tests {
 
         for n in 0..100 {
             let rownum =
-                db.insert(Event::default(), ExpectedRevision::Any)
+                db.append(vec![Event::default()], ExpectedRevision::Any)
                 .expect("Could not write to the DB");
 
             assert_eq!(rownum, n);
         }
 
-        db.insert(event.clone(), ExpectedRevision::Any)
+        db.append(vec![event.clone()], ExpectedRevision::Any)
             .expect("Could not write to the DB");
 
         for n in 0..100 {
             let rownum =
-                db.insert(Event::default(), ExpectedRevision::Any)
+                db.append(vec![Event::default()], ExpectedRevision::Any)
                 .expect("Could not write to the DB");
 
             assert_eq!(rownum, n + 101);
         }
 
         let result: Event = db
-            .query(100)
+            .query(100, 1)
             .expect("Row not found")
+            .pop()
             .expect("Failed to read row");
 
         assert_eq!(result.id(), event.id());

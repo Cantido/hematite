@@ -175,8 +175,13 @@ impl AppState {
         let stream_id = user_stream_id(user_id, stream_id);
         let db = self.streams.get(&stream_id).ok_or(Error::StreamNotFound)?;
 
-        let result = db.lock().unwrap().query(rownum);
-        result
+        let result = db.lock().unwrap().query(rownum, 1);
+
+        if let Ok(mut events) = result {
+            Ok(events.pop())
+        } else {
+            Err(result.unwrap_err())
+        }
     }
 
     #[tracing::instrument]
@@ -184,7 +189,7 @@ impl AppState {
         let stream_id = user_stream_id(user_id, stream_id);
         let db = self.streams.get(&stream_id).ok_or(Error::StreamNotFound)?;
 
-        let result = db.lock().unwrap().query_many(start, limit);
+        let result = db.lock().unwrap().query(start, limit);
         result
     }
 
@@ -197,7 +202,7 @@ impl AppState {
 
         let db = self.streams.get(&stream_id).ok_or(Error::StreamNotFound)?;
 
-        let result = db.lock().unwrap().insert(event, revision);
+        let result = db.lock().unwrap().append(vec![event], revision);
         result
     }
 
@@ -210,7 +215,7 @@ impl AppState {
 
         let db = self.streams.get(&stream_id).ok_or(Error::StreamNotFound)?;
 
-        let result = db.lock().unwrap().insert_batch(events, revision);
+        let result = db.lock().unwrap().append(events, revision);
         result
     }
 
