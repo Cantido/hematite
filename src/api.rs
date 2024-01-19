@@ -268,7 +268,7 @@ async fn get_event_index(state: State<Arc<AppState>>, Extension(user): Extension
     match events_result {
         Ok(events) => {
             let cache_header =
-                if events.len() as u64 == limit {
+                if events.len() == limit {
                     (header::CACHE_CONTROL, "max-age=31536000, immutable")
                 } else {
                     (header::CACHE_CONTROL, "no-cache")

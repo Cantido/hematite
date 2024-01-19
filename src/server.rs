@@ -185,7 +185,7 @@ impl AppState {
     }
 
     #[tracing::instrument]
-    pub fn get_event_many(&self, user_id: &UserId, stream_id: &StreamId, start: u64, limit: u64) -> Result<Vec<Event>> {
+    pub fn get_event_many(&self, user_id: &UserId, stream_id: &StreamId, start: u64, limit: usize) -> Result<Vec<Event>> {
         let stream_id = user_stream_id(user_id, stream_id);
         let db = self.streams.get(&stream_id).ok_or(Error::StreamNotFound)?;
 

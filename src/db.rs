@@ -118,7 +118,7 @@ impl Database {
     }
 
     #[tracing::instrument]
-    pub fn query(&mut self, start: u64, limit: u64) -> Result<Vec<Event>> {
+    pub fn query(&mut self, start: u64, limit: usize) -> Result<Vec<Event>> {
         ensure!(self.state == RunState::Running, Error::Stopped);
 
         let mut file = File::options()
