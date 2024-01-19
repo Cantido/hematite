@@ -6,7 +6,7 @@ use hematite::{
 use tracing::info;
 use log4rs;
 use tracing_subscriber::{prelude::*, filter::EnvFilter, fmt, Registry};
-use std::{env, fs, path::PathBuf, str, sync::Arc};
+use std::{env, fs, path::PathBuf, sync::Arc};
 
 
 #[tokio::main]
@@ -33,12 +33,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::subscriber::set_global_default(subscriber)?;
 
-    const VERSION: &'static str = env!("CARGO_PKG_VERSION");
-    const STREAMS_DIR: &'static str = env!("HEMATITE_STREAMS_DIR");
-    let streams_dir = PathBuf::from(STREAMS_DIR);
+    let version = env::var("CARGO_PKG_VERSION").unwrap();
+    let streams_dir = env::var("HEMATITE_STREAMS_DIR").expect("Env var HEMATITE_STREAMS_DIR is required");
+    let streams_dir = PathBuf::from(streams_dir);
     fs::create_dir_all(&streams_dir).expect("Could not create stream database directory.");
 
-    info!("Starting Hematite DB version {}", VERSION);
+    info!("Starting Hematite DB version {}", version);
     info!("Stream database directory: {}", streams_dir.display());
 
     let state = Arc::new(AppState::new(streams_dir).await?);
