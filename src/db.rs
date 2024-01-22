@@ -1,4 +1,4 @@
-use anyhow::{ensure, Context, Result};
+use anyhow::{ensure, Context, Result, anyhow};
 use cloudevents::event::Event;
 use cloudevents::*;
 use serde::Serialize;
@@ -102,11 +102,24 @@ impl Database {
     }
 
     #[tracing::instrument]
-    pub async fn last_modified(&self) -> Result<SystemTime> {
-       fs::metadata(&self.path).await
-           .with_context(|| format!("Failed to access metadata of DB path {:?}", &self.path))?
-           .modified()
-           .with_context(|| format!("Failed to access modified time of DB path {:?}", &self.path))
+    pub async fn last_modified(&self) -> Result<u64> {
+        fs::metadata(&self.path).await
+            .with_context(|| format!("Failed to access metadata of DB path {:?}", &self.path))?
+            .modified()
+            .with_context(|| format!("Failed to access modified time of DB path {:?}", &self.path))?
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .with_context(|| format!("Failed to convert mtime to unix time for DB path {:?}", &self.path))
+            .map(|d| d.as_secs())
+    }
+
+    #[tracing::instrument]
+    pub async fn file_len(&self) -> Result<u64> {
+        let size =
+            fs::metadata(&self.path).await
+                .with_context(|| format!("Failed to access metadata of DB path {:?}", &self.path))?
+                .len();
+
+        Ok(size)
     }
 
     #[tracing::instrument]

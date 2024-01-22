@@ -308,8 +308,7 @@ async fn get_stream(state: State<Arc<AppState>>, Extension(user): Extension<User
 
     match get_result {
         Ok(stream) => {
-            let unix_ts = stream.last_modified.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
-            let last_modified = OffsetDateTime::from_unix_timestamp(unix_ts.try_into().unwrap()).unwrap().format(&Rfc2822).unwrap();
+            let last_modified = OffsetDateTime::from_unix_timestamp(stream.last_modified.try_into().expect("Expected app to be running after epoch")).unwrap().format(&Rfc2822).unwrap();
 
             let body = ApiResource {
                 attributes: Some(stream),

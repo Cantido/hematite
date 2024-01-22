@@ -41,7 +41,8 @@ pub struct User {
 pub struct Stream {
     pub revision: u64,
     pub state: RunState,
-    pub last_modified: SystemTime,
+    pub last_modified: u64,
+    pub usage: u64,
 }
 
 #[derive(Serialize)]
@@ -228,8 +229,10 @@ impl AppState {
         let revision = db.revision();
         let state = db.state();
         let last_modified = db.last_modified().await?;
+        let usage = db.file_len().await?;
 
         Ok(Stream {
+            usage,
             revision,
             state,
             last_modified,
