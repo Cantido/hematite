@@ -4,10 +4,10 @@ use cloudevents::*;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fmt;
-use std::fs::{File, self};
-use std::io::prelude::*;
-use std::io::{self, BufRead};
-use std::os::unix::fs::MetadataExt;
+use std::io::{SeekFrom, Write};
+use std::time::SystemTime;
+use tokio::fs::{File, self};
+use tokio::io::{BufReader, AsyncBufReadExt, AsyncSeekExt, AsyncWriteExt};
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -59,18 +59,20 @@ impl Database {
         }
     }
 
-    fn load(&mut self) -> Result<()> {
+    async fn load(&mut self) -> Result<()> {
         let file = File::options()
             .read(true)
             .append(true)
             .create(true)
-            .open(&self.path)
+            .open(&self.path).await
             .with_context(|| format!("Could not open file to create DB at {:?}", self.path))?;
 
         let mut offset = 0u64;
+        let mut rowid = 0u64;
 
-        for (rowid, line_result) in io::BufReader::new(&file).lines().enumerate() {
-            let line = line_result.with_context(|| format!("Failed to read line {} of DB at {:?}", rowid + 1, self.path))?;
+        let mut lines = BufReader::new(file).lines();
+
+        while let Some(line) = lines.next_line().await? {
             let rowlen: u64 = line.len() as u64;
 
             let event = decode_event(line).with_context(|| format!("Failed to decode line {} of DB at {:?}", rowid + 1, self.path))?;
@@ -78,20 +80,21 @@ impl Database {
             self.source_id_index.insert((event.source().to_string(), event.id().to_string()), rowid as u64);
 
             // offset addend is `rowlen + 1` because `BufReader::lines()` strips newlines for us
-            offset = offset + rowlen + 1;
+            offset += rowlen + 1;
+            rowid += 1;
         }
 
         Ok(())
     }
 
     #[tracing::instrument]
-    pub fn start(&mut self) -> Result<bool> {
+    pub async fn start(&mut self) -> Result<bool> {
         match self.state {
             RunState::Running => {
                 return Ok(false)
             }
             RunState::Stopped => {
-                self.load()?;
+                self.load().await?;
                 self.state = RunState::Running;
                 return Ok(true);
             }
@@ -99,12 +102,11 @@ impl Database {
     }
 
     #[tracing::instrument]
-    pub fn last_modified(&self) -> Result<i64> {
-       let mtime = fs::metadata(&self.path)
-           .with_context(|| format!("Failed to access mtime of DB path {:?}", &self.path))?
-           .mtime();
-
-        Ok(mtime)
+    pub async fn last_modified(&self) -> Result<SystemTime> {
+       fs::metadata(&self.path).await
+           .with_context(|| format!("Failed to access metadata of DB path {:?}", &self.path))?
+           .modified()
+           .with_context(|| format!("Failed to access modified time of DB path {:?}", &self.path))
     }
 
     #[tracing::instrument]
@@ -118,14 +120,14 @@ impl Database {
     }
 
     #[tracing::instrument]
-    pub fn query(&mut self, start: u64, limit: usize) -> Result<Vec<Event>> {
+    pub async fn query(&mut self, start: u64, limit: usize) -> Result<Vec<Event>> {
         ensure!(self.state == RunState::Running, Error::Stopped);
 
         let mut file = File::options()
             .read(true)
             .append(true)
             .create(true)
-            .open(&self.path)
+            .open(&self.path).await
             .with_context(|| format!("Could not open file to query DB at {:?}", self.path))?;
 
         let row_offset = match self.primary_index.get(&start) {
@@ -133,22 +135,27 @@ impl Database {
             None => return Ok(vec![]),
         };
         let _position = file
-            .seek(io::SeekFrom::Start(*row_offset))
+            .seek(SeekFrom::Start(*row_offset)).await
             .with_context(|| format!("Failed to seek to row {} (offset {}) from DB at {:?}", start, row_offset, self.path))?;
 
         let mut events = vec![];
 
-        for (rowid, line_result) in io::BufReader::new(&file).lines().take(limit.try_into().unwrap()).enumerate() {
-            let line = line_result.with_context(|| format!("Failed to read rowid {} from DB at {:?}", rowid, self.path))?;
+        let mut lines = BufReader::new(file).lines();
+
+        while let Some(line) = lines.next_line().await? {
             let event = decode_event(line)?;
             events.push(event);
+
+            if events.len() >= limit {
+                break
+            }
         }
 
         Ok(events)
     }
 
     #[tracing::instrument]
-    pub fn append(
+    pub async fn append(
         &mut self,
         events: Vec<Event>,
         expected_revision: ExpectedRevision,
@@ -168,13 +175,13 @@ impl Database {
         };
 
         if revision_match {
-            self.write_events(&events)
+            self.write_events(&events).await
         } else {
             Err(Error::RevisionMismatch.into())
         }
     }
 
-    fn write_events(&mut self, events: &Vec<Event>) -> Result<u64> {
+    async fn write_events(&mut self, events: &Vec<Event>) -> Result<u64> {
         ensure!(!events.is_empty(), "Events list cannot be empty");
 
         let mut event_lengths = Vec::new();
@@ -193,13 +200,13 @@ impl Database {
             .read(true)
             .append(true)
             .create(true)
-            .open(&self.path)
+            .open(&self.path).await
             .with_context(|| format!("Failed to open file for DB at {:?}", self.path))?;
 
-        let position = file.seek(io::SeekFrom::End(0))
+        let position = file.seek(SeekFrom::End(0)).await
             .with_context(|| format!("Failed to seek to end of file for DB at {:?}", self.path))?;
 
-        file.write_all(&bytes)
+        file.write_all(&bytes).await
             .with_context(|| format!("Failed to write event to file for DB at {:?}", self.path))?;
 
         let mut last_revision = 0;
@@ -224,8 +231,8 @@ impl Database {
         Ok(last_revision)
     }
 
-    pub fn delete(&mut self) -> anyhow::Result<()> {
-        fs::remove_file(&self.path)
+    pub async fn delete(&mut self) -> anyhow::Result<()> {
+        fs::remove_file(&self.path).await
             .with_context(|| format!("Failed to delete datbase file at {:?}", self.path))?;
         self.primary_index.clear();
         self.source_id_index.clear();
@@ -275,21 +282,21 @@ mod tests {
         }
     }
 
-    #[test]
-    fn can_write_and_read() {
+    #[tokio::test]
+    async fn can_write_and_read() {
         let test_file = TestFile::new("writereadtest.db");
         let _ = test_file.delete();
 
         let mut db = Database::new(test_file.path());
-        db.start().expect("Could not start DB");
+        db.start().await.expect("Could not start DB");
 
         let event = Event::default();
 
-        let rownum = db.append(vec![event.clone()], ExpectedRevision::Any)
+        let rownum = db.append(vec![event.clone()], ExpectedRevision::Any).await
             .expect("Could not write to the DB");
 
         let result: Event = db
-            .query(0, 1)
+            .query(0, 1).await
             .expect("Row not found")
             .pop()
             .expect("Failed to read row");
@@ -298,139 +305,139 @@ mod tests {
         assert_eq!(result.id(), event.id());
     }
 
-    #[test]
-    fn cannot_write_duplicate_event() {
+    #[tokio::test]
+    async fn cannot_write_duplicate_event() {
         let test_file = TestFile::new("writereadtest.db");
         let _ = test_file.delete();
 
         let mut db = Database::new(test_file.path());
-        db.start().expect("Could not start DB");
+        db.start().await.expect("Could not start DB");
 
         let event = Event::default();
 
         let rownum =
-            db.append(vec![event.clone()], ExpectedRevision::Any)
+            db.append(vec![event.clone()], ExpectedRevision::Any).await
             .expect("Could not write to the DB");
 
         assert_eq!(rownum, 0);
-        assert!(db.append(vec![event.clone()], ExpectedRevision::Any).is_err());
+        assert!(db.append(vec![event.clone()], ExpectedRevision::Any).await.is_err());
     }
 
-    #[test]
-    fn read_nonexistent() {
+    #[tokio::test]
+    async fn read_nonexistent() {
         let test_file = TestFile::new("readnonexistent.db");
         let _ = test_file.delete();
 
         let mut db = Database::new(test_file.path());
-        db.start().expect("Could not start DB");
+        db.start().await.expect("Could not start DB");
 
-        let result = db.query(0, 1).expect("Expected success reading empty db");
+        let result = db.query(0, 1).await.expect("Expected success reading empty db");
 
         assert!(result.is_empty());
     }
 
-    #[test]
-    fn can_write_expecting_no_stream_in_empty_db() {
+    #[tokio::test]
+    async fn can_write_expecting_no_stream_in_empty_db() {
         let test_file = TestFile::new("nostreamemptydb.db");
         let _ = test_file.delete();
 
         let mut db = Database::new(test_file.path());
-        db.start().expect("Could not start DB");
+        db.start().await.expect("Could not start DB");
 
         let event = Event::default();
 
-        db.append(vec![event], ExpectedRevision::NoStream)
+        db.append(vec![event], ExpectedRevision::NoStream).await
             .expect("Could not write to the DB");
     }
 
-    #[test]
-    fn cannot_write_expecting_no_stream_in_non_empty_db() {
+    #[tokio::test]
+    async fn cannot_write_expecting_no_stream_in_non_empty_db() {
         let test_file = TestFile::new("nonemptydbexpectingnostream.db");
         let _ = test_file.delete();
 
         let mut db = Database::new(test_file.path());
-        db.start().expect("Could not start DB");
+        db.start().await.expect("Could not start DB");
 
         let event1 = Event::default();
         let event2 = Event::default();
-        db.append(vec![event1], ExpectedRevision::NoStream)
+        db.append(vec![event1], ExpectedRevision::NoStream).await
             .expect("Could not write to the DB");
-        assert!(db.append(vec![event2], ExpectedRevision::NoStream).is_err());
+        assert!(db.append(vec![event2], ExpectedRevision::NoStream).await.is_err());
     }
 
-    #[test]
-    fn cannot_write_to_empty_db_expecting_stream_exists() {
+    #[tokio::test]
+    async fn cannot_write_to_empty_db_expecting_stream_exists() {
         let test_file = TestFile::new("emptyexpectexists.db");
         let _ = test_file.delete();
 
         let mut db = Database::new(test_file.path());
-        db.start().expect("Could not start DB");
+        db.start().await.expect("Could not start DB");
 
         let event = Event::default();
 
-        assert!(db.append(vec![event], ExpectedRevision::StreamExists).is_err());
+        assert!(db.append(vec![event], ExpectedRevision::StreamExists).await.is_err());
     }
 
-    #[test]
-    fn cannot_write_expecting_revision_zero_with_empty_db() {
+    #[tokio::test]
+    async fn cannot_write_expecting_revision_zero_with_empty_db() {
         let test_file = TestFile::new("expectrevisionzerofailure.db");
         let _ = test_file.delete();
 
         let mut db = Database::new(test_file.path());
-        db.start().expect("Could not start DB");
+        db.start().await.expect("Could not start DB");
 
         let event = Event::default();
 
-        assert!(db.append(vec![event], ExpectedRevision::Exact(0)).is_err());
+        assert!(db.append(vec![event], ExpectedRevision::Exact(0)).await.is_err());
     }
 
-    #[test]
-    fn can_write_expecting_revision_zero_with_present_row() {
+    #[tokio::test]
+    async fn can_write_expecting_revision_zero_with_present_row() {
         let test_file = TestFile::new("expectrevisionzerofailure.db");
         let _ = test_file.delete();
 
         let mut db = Database::new(test_file.path());
-        db.start().expect("Could not start DB");
+        db.start().await.expect("Could not start DB");
 
         let event1 = Event::default();
         let event2 = Event::default();
-        db.append(vec![event1], ExpectedRevision::NoStream)
+        db.append(vec![event1], ExpectedRevision::NoStream).await
             .expect("Could not write to the DB");
-        db.append(vec![event2], ExpectedRevision::Exact(0))
+        db.append(vec![event2], ExpectedRevision::Exact(0)).await
             .expect("Could not write to the DB");
     }
 
-    #[test]
-    fn can_write_and_read_many() {
+    #[tokio::test]
+    async fn can_write_and_read_many() {
         let test_file = TestFile::new("writereadmanytest.db");
         let _ = test_file.delete();
 
         let mut db = Database::new(test_file.path());
-        db.start().expect("Could not start DB");
+        db.start().await.expect("Could not start DB");
 
         let event = Event::default();
 
         for n in 0..100 {
             let rownum =
-                db.append(vec![Event::default()], ExpectedRevision::Any)
+                db.append(vec![Event::default()], ExpectedRevision::Any).await
                 .expect("Could not write to the DB");
 
             assert_eq!(rownum, n);
         }
 
-        db.append(vec![event.clone()], ExpectedRevision::Any)
+        db.append(vec![event.clone()], ExpectedRevision::Any).await
             .expect("Could not write to the DB");
 
         for n in 0..100 {
             let rownum =
-                db.append(vec![Event::default()], ExpectedRevision::Any)
+                db.append(vec![Event::default()], ExpectedRevision::Any).await
                 .expect("Could not write to the DB");
 
             assert_eq!(rownum, n + 101);
         }
 
         let result: Event = db
-            .query(100, 1)
+            .query(100, 1).await
             .expect("Row not found")
             .pop()
             .expect("Failed to read row");

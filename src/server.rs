@@ -2,13 +2,13 @@ use std::{
     fs,
     path::PathBuf,
     str,
-    sync::{Mutex, Arc}, fmt,
+    sync::Arc, fmt, time::SystemTime,
 };
 use anyhow::{Context, Result};
 use cloudevents::Event;
 use dashmap::DashMap;
 use data_encoding::BASE32_NOPAD;
-use tokio::task::JoinSet;
+use tokio::{sync::Mutex, task::JoinSet};
 use tracing::{debug, error, info};
 use serde::Serialize;
 use crate::db::{
@@ -41,7 +41,7 @@ pub struct User {
 pub struct Stream {
     pub revision: u64,
     pub state: RunState,
-    pub last_modified: i64,
+    pub last_modified: SystemTime,
 }
 
 #[derive(Serialize)]
@@ -115,7 +115,7 @@ impl AppState {
                 let db = stream_id.value().clone();
 
                 tasks.spawn(async move {
-                    db.lock().unwrap().start()
+                    db.lock().await.start().await
                 });
             }
 
@@ -163,19 +163,19 @@ impl AppState {
         Ok(init_db)
     }
 
-    fn start_database(&self, stream_id: &UserStreamId) -> Result<bool> {
+    async fn start_database(&self, stream_id: &UserStreamId) -> Result<bool> {
         let db = self.streams.get(stream_id).ok_or(Error::StreamNotFound)?;
 
-        let result = db.lock().unwrap().start();
+        let result = db.lock().await.start().await;
         result
     }
 
     #[tracing::instrument]
-    pub fn get_event(&self, user_id: &UserId, stream_id: &StreamId, rownum: u64) -> Result<Option<Event>> {
+    pub async fn get_event(&self, user_id: &UserId, stream_id: &StreamId, rownum: u64) -> Result<Option<Event>> {
         let stream_id = user_stream_id(user_id, stream_id);
         let db = self.streams.get(&stream_id).ok_or(Error::StreamNotFound)?;
 
-        let result = db.lock().unwrap().query(rownum, 1);
+        let result = db.lock().await.query(rownum, 1).await;
 
         if let Ok(mut events) = result {
             Ok(events.pop())
@@ -185,49 +185,49 @@ impl AppState {
     }
 
     #[tracing::instrument]
-    pub fn get_event_many(&self, user_id: &UserId, stream_id: &StreamId, start: u64, limit: usize) -> Result<Vec<Event>> {
+    pub async fn get_event_many(&self, user_id: &UserId, stream_id: &StreamId, start: u64, limit: usize) -> Result<Vec<Event>> {
         let stream_id = user_stream_id(user_id, stream_id);
         let db = self.streams.get(&stream_id).ok_or(Error::StreamNotFound)?;
 
-        let result = db.lock().unwrap().query(start, limit);
+        let result = db.lock().await.query(start, limit).await;
         result
     }
 
     #[tracing::instrument]
-    pub fn insert_event(&self, user_id: &UserId, stream_id: &StreamId, event: Event, revision: ExpectedRevision) -> Result<u64> {
+    pub async fn insert_event(&self, user_id: &UserId, stream_id: &StreamId, event: Event, revision: ExpectedRevision) -> Result<u64> {
         let stream_id = user_stream_id(user_id, stream_id);
         if self.initialize_database(&stream_id)? {
-            self.start_database(&stream_id)?;
+            self.start_database(&stream_id).await?;
         }
 
         let db = self.streams.get(&stream_id).ok_or(Error::StreamNotFound)?;
 
-        let result = db.lock().unwrap().append(vec![event], revision);
+        let result = db.lock().await.append(vec![event], revision).await;
         result
     }
 
     #[tracing::instrument]
-    pub fn insert_event_many(&self, user_id: &UserId, stream_id: &StreamId, events: Vec<Event>, revision: ExpectedRevision) -> Result<u64> {
+    pub async fn insert_event_many(&self, user_id: &UserId, stream_id: &StreamId, events: Vec<Event>, revision: ExpectedRevision) -> Result<u64> {
         let stream_id = user_stream_id(user_id, stream_id);
         if self.initialize_database(&stream_id)? {
-            self.start_database(&stream_id)?;
+            self.start_database(&stream_id).await?;
         }
 
         let db = self.streams.get(&stream_id).ok_or(Error::StreamNotFound)?;
 
-        let result = db.lock().unwrap().append(events, revision);
+        let result = db.lock().await.append(events, revision).await;
         result
     }
 
     #[tracing::instrument]
-    pub fn get_stream(&self, user_id: &UserId, stream_id: &StreamId) -> Result<Stream> {
+    pub async fn get_stream(&self, user_id: &UserId, stream_id: &StreamId) -> Result<Stream> {
         let stream_id = user_stream_id(user_id, stream_id);
         let db_lock = self.streams.get(&stream_id).ok_or(Error::StreamNotFound)?;
 
-        let db = db_lock.lock().unwrap();
+        let db = db_lock.lock().await;
         let revision = db.revision();
         let state = db.state();
-        let last_modified = db.last_modified()?;
+        let last_modified = db.last_modified().await?;
 
         Ok(Stream {
             revision,
@@ -237,12 +237,12 @@ impl AppState {
     }
 
     #[tracing::instrument]
-    pub fn delete_stream(&self, user_id: &UserId, stream_id: &StreamId) -> Result<bool> {
+    pub async fn delete_stream(&self, user_id: &UserId, stream_id: &StreamId) -> Result<bool> {
         let stream_id = user_stream_id(user_id, stream_id);
 
         if let Some((_, db_mutex)) = self.streams.remove(&stream_id) {
-            let mut db = db_mutex.lock().unwrap();
-            db.delete().with_context(|| format!("user_id={} stream_id={} Failed to delete stream", stream_id.0, stream_id.1))?;
+            let mut db = db_mutex.lock().await;
+            db.delete().await.with_context(|| format!("user_id={} stream_id={} Failed to delete stream", stream_id.0, stream_id.1))?;
             Ok(true)
         } else {
             Ok(false)

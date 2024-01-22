@@ -17,6 +17,7 @@ use axum::{
     }
 };
 use anyhow::{bail, Result};
+use axum_macros::debug_handler;
 use cloudevents::Event;
 use jsonwebtoken::{
     decode,
@@ -30,7 +31,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc2822};
 use uuid::Uuid;
 use std::{
     collections::HashMap,
-    sync::Arc,
+    sync::Arc, time::SystemTime,
 };
 use crate::{
     db::{self, ExpectedRevision},
@@ -226,8 +227,9 @@ fn authorize_current_user(token: &str) -> Result<User> {
     }
 }
 
+#[debug_handler]
 async fn get_event(state: State<Arc<AppState>>, Extension(user): Extension<User>, Path((stream_id, rownum)): Path<(String, u64)>) -> Response {
-    let event_result = state.get_event(&user.id, &stream_id, rownum);
+    let event_result = state.get_event(&user.id, &stream_id, rownum).await;
 
     match event_result {
         Ok(Some(event)) => return ([(header::CACHE_CONTROL, "max-age=31536000, immutable")], Json(event)).into_response(),
@@ -259,11 +261,12 @@ async fn get_event(state: State<Arc<AppState>>, Extension(user): Extension<User>
     }
 }
 
+#[debug_handler]
 async fn get_event_index(state: State<Arc<AppState>>, Extension(user): Extension<User>, Path(stream_id): Path<String>, Query(query): Query<HashMap<String, String>>) -> Response {
     let start = query.get("page[offset]").unwrap_or(&"0".to_string()).parse().unwrap_or(0).max(0);
     let limit = query.get("page[limit]").unwrap_or(&"50".to_string()).parse().unwrap_or(50).min(1000);
 
-    let events_result = state.get_event_many(&user.id, &stream_id, start, limit);
+    let events_result = state.get_event_many(&user.id, &stream_id, start, limit).await;
 
     match events_result {
         Ok(events) => {
@@ -299,12 +302,14 @@ async fn get_event_index(state: State<Arc<AppState>>, Extension(user): Extension
     }
 }
 
+#[debug_handler]
 async fn get_stream(state: State<Arc<AppState>>, Extension(user): Extension<User>, Path(stream_id): Path<String>) -> Response {
-    let get_result = state.get_stream(&user.id, &stream_id);
+    let get_result = state.get_stream(&user.id, &stream_id).await;
 
     match get_result {
         Ok(stream) => {
-            let last_modified = OffsetDateTime::from_unix_timestamp(stream.last_modified).unwrap().format(&Rfc2822).unwrap();
+            let unix_ts = stream.last_modified.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+            let last_modified = OffsetDateTime::from_unix_timestamp(unix_ts.try_into().unwrap()).unwrap().format(&Rfc2822).unwrap();
 
             let body = ApiResource {
                 attributes: Some(stream),
@@ -345,8 +350,9 @@ async fn get_stream(state: State<Arc<AppState>>, Extension(user): Extension<User
     }
 }
 
+#[debug_handler]
 async fn delete_stream(state: State<Arc<AppState>>, Extension(user): Extension<User>, Path(stream_id): Path<String>) -> Response {
-    let delete_result = state.delete_stream(&user.id, &stream_id);
+    let delete_result = state.delete_stream(&user.id, &stream_id).await;
 
     match delete_result {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
@@ -383,6 +389,7 @@ enum PostEventPayload {
     Batch(Vec<Event>),
 }
 
+#[debug_handler]
 async fn post_event(
     state: State<Arc<AppState>>,
     Extension(user): Extension<User>,
@@ -416,8 +423,8 @@ async fn post_event(
     };
 
     let result = match payload {
-        PostEventPayload::Single(event) => state.insert_event(&user.id, &stream_id, event, revision),
-        PostEventPayload::Batch(events) => state.insert_event_many(&user.id, &stream_id, events, revision),
+        PostEventPayload::Single(event) => state.insert_event(&user.id, &stream_id, event, revision).await,
+        PostEventPayload::Batch(events) => state.insert_event_many(&user.id, &stream_id, events, revision).await,
     };
 
     match result {
