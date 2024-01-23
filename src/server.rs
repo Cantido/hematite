@@ -2,7 +2,7 @@ use std::{
     fs,
     path::PathBuf,
     str,
-    sync::Arc, fmt, time::SystemTime,
+    sync::Arc, fmt,
 };
 use anyhow::{Context, Result};
 use cloudevents::Event;
@@ -88,7 +88,11 @@ impl AppState {
         {
             if let Ok(user_dir) = user_dir_result {
                 let user_path = user_dir.path();
-                let user_id: UserId = user_path.file_stem().unwrap().to_str().unwrap().parse()?;
+                let user_id: UserId = user_path.file_stem().unwrap().to_str().unwrap().to_string();
+
+                if user_id == "lost+found" {
+                    continue;
+                }
 
                 for db_file_result in user_dir
                     .path()

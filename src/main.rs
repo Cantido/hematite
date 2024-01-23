@@ -1,44 +1,51 @@
-use axum::{Router, response::Response, http::{header, StatusCode}, extract::Request, middleware::{Next, self}};
+use axum::{response::Response, http::{header, StatusCode}, extract::Request, middleware::{Next, self}};
 use hematite::{
     api,
     server::AppState,
 };
 use tracing::info;
-use log4rs;
 use tracing_subscriber::{prelude::*, filter::EnvFilter, fmt, Registry};
 use std::{env, fs, path::PathBuf, sync::Arc};
 
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    log4rs::init_file("config/log4rs.yml", Default::default()).unwrap();
+    env_logger::init();
 
-    let otlp_exporter = opentelemetry_otlp::new_exporter().tonic();
+    let telemetry = {
+        let otlp_exporter = opentelemetry_otlp::new_exporter().tonic();
 
-    let tracer = opentelemetry_otlp::new_pipeline()
-        .tracing()
-        .with_exporter(otlp_exporter)
-        .install_simple()?;
+        let tracer = opentelemetry_otlp::new_pipeline()
+            .tracing()
+            .with_exporter(otlp_exporter)
+            .install_simple()?;
 
-    let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+        tracing_opentelemetry::layer().with_tracer(tracer)
+    };
 
     let filter_layer = EnvFilter::try_from_default_env()
         .or_else(|_| EnvFilter::try_new("info"))?;
 
-    let subscriber =
-        Registry::default()
+    if env::var("OTEL_SDL_DISABLED").unwrap_or("false".to_string()) == "true" {
+        let subscriber = Registry::default()
             .with(filter_layer)
             .with(telemetry)
             .with(fmt::layer());
+        tracing::subscriber::set_global_default(subscriber)?;
+    } else {
+        let subscriber = Registry::default()
+            .with(filter_layer)
+            .with(fmt::layer());
+        tracing::subscriber::set_global_default(subscriber)?;
+    }
 
-    tracing::subscriber::set_global_default(subscriber)?;
 
-    let version = env::var("CARGO_PKG_VERSION").unwrap();
+    let _ = std::env::var("HEMATITE_JWT_SECRET").expect("Env var HEMATITE_JWT_SECRET is required");
     let streams_dir = env::var("HEMATITE_STREAMS_DIR").expect("Env var HEMATITE_STREAMS_DIR is required");
     let streams_dir = PathBuf::from(streams_dir);
     fs::create_dir_all(&streams_dir).expect("Could not create stream database directory.");
 
-    info!("Starting Hematite DB version {}", version);
+    info!("Starting Hematite DB version: {}", hematite::build::VERSION);
     info!("Stream database directory: {}", streams_dir.display());
 
     let state = Arc::new(AppState::new(streams_dir).await?);
