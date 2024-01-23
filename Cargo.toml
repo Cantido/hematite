@@ -30,6 +30,7 @@ tokio = { version = "1.29.1", features = ["macros", "rt-multi-thread", "fs"] }
 tracing = "0.1.40"
 tracing-opentelemetry = "0.22.0"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+url = "2.5.0"
 uuid = { version = "1.7.0", features = ["serde", "v7"] }
 
 [dev-dependencies]

@@ -24,10 +24,10 @@ use jsonwebtoken::{
     errors::ErrorKind,
     Validation, DecodingKey, Algorithm, decode_header,
 };
-use reqwest::Url;
 use tracing::{error, debug};
 use serde::{Deserialize, Serialize};
 use time::{OffsetDateTime, format_description::well_known::Rfc2822};
+use url::Url;
 use uuid::Uuid;
 use std::{
     collections::HashMap,

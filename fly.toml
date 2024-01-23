@@ -9,7 +9,8 @@ primary_region = "ord"
 [build]
 
 [env]
-  HEMATITE_OIDC_URL = "https://96lo74.logto.app/oidc"
+  # The trailing slash on OIDC_URL is important!
+  HEMATITE_OIDC_URL = "https://96lo74.logto.app/oidc/"
   HEMATITE_JWT_AUD = "https://hematitedb.fly.dev"
 
 [http_service]
