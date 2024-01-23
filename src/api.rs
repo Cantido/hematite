@@ -251,14 +251,20 @@ async fn authorize_current_user(token: &str) -> Result<User> {
         .with_context(|| "Failed to build openid-configuration URL")?;
 
     let oidc_config: OpenIdConfiguration =
-        reqwest::get(oidc_config_url).await?
-        .json().await?;
+        reqwest::get(oidc_config_url.clone()).await
+        .with_context(|| format!("Failed to get OIDC config url at {}", oidc_config_url))?
+        .json().await
+        .with_context(|| format!("Failed to decode OIDC config as JSON from {}", oidc_config_url))?;
 
     let jwks_body: JwksResponse =
-        reqwest::get(&oidc_config.jwks_uri).await?
-        .json().await?;
+        reqwest::get(&oidc_config.jwks_uri).await
+        .with_context(|| format!("Failed to get JWKS response at URL {}", oidc_config.jwks_uri))?
+        .json().await
+        .with_context(|| format!("Failed to decode JWKS response as JSON from {}", oidc_config.jwks_uri))?;
 
-    let kid = decode_header(&token)?.kid
+    let kid = decode_header(&token)
+        .with_context(|| "Failed to decode JWT header")?
+        .kid
         .ok_or(anyhow!("Failed to get kid from jwt header."))?;
 
     let jwk = &jwks_body.keys.iter().find(|key| key.kid == kid)
