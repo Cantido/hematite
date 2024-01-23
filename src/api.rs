@@ -316,11 +316,28 @@ async fn get_event_index(state: State<Arc<AppState>>, Extension(user): Extension
 async fn get_streams(
     state: State<Arc<AppState>>,
     Extension(user): Extension<User>,
+    Query(query): Query<HashMap<String, String>>,
 ) -> Response {
     let get_result = state.streams(&user.id).await;
 
     match get_result {
-        Ok(streams) => {
+        Ok(mut streams) => {
+            let default_sort_field = "id".to_string();
+            let sort_field: &str = query.get("sort").unwrap_or(&default_sort_field);
+
+            match sort_field {
+                "id" => streams.sort_by(|a, b| a.id.cmp(&b.id)),
+                "usage" => streams.sort_by(|a, b| a.usage.cmp(&b.usage)),
+                "-usage" => streams.sort_by(|a, b| b.usage.cmp(&a.usage)),
+                "revision" => streams.sort_by(|a, b| a.revision.cmp(&b.revision)),
+                "-revision" => streams.sort_by(|a, b| b.revision.cmp(&a.revision)),
+                "last_modified" => streams.sort_by(|a, b| a.last_modified.cmp(&b.last_modified)),
+                "-last_modified" => streams.sort_by(|a, b| b.last_modified.cmp(&a.last_modified)),
+                _ => {
+                    return StatusCode::BAD_REQUEST.into_response();
+                },
+            };
+
             let mut stream_resources = vec![];
             for stream in streams.into_iter() {
                 stream_resources.push(ApiResource::new(stream.id.to_string(), "streams".to_string(), stream));
