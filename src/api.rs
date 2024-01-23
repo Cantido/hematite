@@ -247,7 +247,7 @@ async fn authorize_current_user(token: &str) -> Result<User> {
         .parse()
         .with_context(|| "Failed to parse HEMATITE_OIDC_URL as a URL")?;
 
-    let oidc_config_url = oidc_url.join("/.well-known/openid-configuration")
+    let oidc_config_url = oidc_url.join(".well-known/openid-configuration")
         .with_context(|| "Failed to build openid-configuration URL")?;
 
     let oidc_config: OpenIdConfiguration =
