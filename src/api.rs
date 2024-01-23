@@ -31,7 +31,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc2822};
 use uuid::Uuid;
 use std::{
     collections::HashMap,
-    sync::Arc, time::SystemTime,
+    sync::Arc,
 };
 use crate::{
     db::{self, ExpectedRevision},
@@ -84,6 +84,11 @@ struct ApiDataDocument<T> {
 }
 
 #[derive(Debug, Serialize)]
+struct ApiDataCollectionDocument<T> {
+    data: Vec<ApiResource<T>>,
+}
+
+#[derive(Debug, Serialize)]
 struct ApiErrorDocument {
     errors: Option<Vec<ApiError>>,
 }
@@ -98,10 +103,17 @@ impl ApiErrorDocument {
 
 #[derive(Debug, Serialize)]
 struct ApiResource<T> {
+    id: String,
+    #[serde(rename = "type")]
+    resource_type: String,
     attributes: T,
 }
 
 impl<T> ApiResource<T> {
+    fn new(id: String, resource_type: String, attributes: T) -> Self {
+        Self { id, resource_type, attributes }
+    }
+
     fn into_document(self) -> ApiDataDocument<T> {
         ApiDataDocument {
             data: self,
@@ -123,15 +135,13 @@ async fn health(state: State<Arc<AppState>>) -> Response {
     ).into_response();
 }
 
-pub fn health_routes() -> Router<Arc<AppState>> {
-    Router::new().route("/", get(health))
-}
-
 pub fn stream_routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/:stream/events/:rownum", get(get_event))
-        .route("/:stream/events", post(post_event).get(get_event_index))
-        .route("/:stream", get(get_stream).delete(delete_stream))
+        .route("/streams", get(get_streams))
+        .route("/streams/:stream/events/:rownum", get(get_event))
+        .route("/streams/:stream/events", post(post_event).get(get_event_index))
+        .route("/streams/:stream", get(get_stream).delete(delete_stream))
+        .route("/health", get(health))
         .layer(middleware::from_fn(auth))
 }
 
@@ -303,6 +313,44 @@ async fn get_event_index(state: State<Arc<AppState>>, Extension(user): Extension
 }
 
 #[debug_handler]
+async fn get_streams(
+    state: State<Arc<AppState>>,
+    Extension(user): Extension<User>,
+) -> Response {
+    let get_result = state.streams(&user.id).await;
+
+    match get_result {
+        Ok(streams) => {
+            let mut stream_resources = vec![];
+            for stream in streams.into_iter() {
+                stream_resources.push(ApiResource::new(stream.id.to_string(), "streams".to_string(), stream));
+            }
+
+            let doc = ApiDataCollectionDocument { data: stream_resources };
+
+            return Json::from(doc).into_response();
+        }
+        Err(err) => {
+            let error_id = Uuid::now_v7();
+            error!("error_id={} user_id={} Error getting streams: {}", error_id, user.id, err);
+
+            let body = ApiError {
+                id: error_id,
+                title: "Internal server error".to_string(),
+                detail: None,
+                source: None,
+            }.into_document();
+
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CACHE_CONTROL, "no-cache")],
+                Json::from(body),
+            ).into_response()
+        }
+    }
+}
+
+#[debug_handler]
 async fn get_stream(state: State<Arc<AppState>>, Extension(user): Extension<User>, Path(stream_id): Path<String>) -> Response {
     let get_result = state.get_stream(&user.id, &stream_id).await;
 
@@ -311,6 +359,8 @@ async fn get_stream(state: State<Arc<AppState>>, Extension(user): Extension<User
             let last_modified = OffsetDateTime::from_unix_timestamp(stream.last_modified.try_into().expect("Expected app to be running after epoch")).unwrap().format(&Rfc2822).unwrap();
 
             let body = ApiResource {
+                id: stream_id,
+                resource_type: "streams".to_string(),
                 attributes: Some(stream),
             }.into_document();
 

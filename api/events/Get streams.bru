@@ -1,0 +1,19 @@
+meta {
+  name: Get streams
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/streams
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{authToken}}
+}
+
+assert {
+  res.status: eq 200
+}

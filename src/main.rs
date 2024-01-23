@@ -43,9 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = Arc::new(AppState::new(streams_dir).await?);
 
-    let app = Router::new()
-        .nest("/streams", api::stream_routes())
-        .nest("/health", api::health_routes())
+    let app = api::stream_routes()
         .layer(middleware::from_fn(apply_secure_headers))
         .fallback(fallback)
         .with_state(state);

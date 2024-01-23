@@ -39,6 +39,8 @@ pub struct User {
 
 #[derive(Debug, Serialize)]
 pub struct Stream {
+    #[serde(skip)]
+    pub id: StreamId,
     pub revision: u64,
     pub state: RunState,
     pub last_modified: u64,
@@ -220,10 +222,43 @@ impl AppState {
         result
     }
 
+    pub async fn streams(&self, user_id: &UserId) -> Result<Vec<Stream>> {
+        let mut stream_ids = vec![];
+
+        for stream_file_result in self
+            .streams_path
+            .join(user_id)
+            .read_dir()
+            .with_context(|| format!("Couldn't read user directory at {:?}", self.streams_path.join(user_id)))?
+        {
+            if let Ok(stream_file) = stream_file_result {
+                let stream_path = stream_file.path();
+                let stream_name = stream_path.file_stem().unwrap().to_str().expect("Expected stream filename to be valid unicode");
+                let stream_id_bytes = BASE32_NOPAD
+                        .decode(stream_name.as_bytes())
+                        .with_context(|| format!("Expected file in stream dir to have a Base32 no-pad encoded filename, but it was {}", stream_name))?;
+                let stream_id = str::from_utf8(stream_id_bytes.as_slice())?.to_string();
+
+                stream_ids.push(stream_id)
+            }
+
+        }
+
+        let mut streams = vec![];
+
+        for stream_id in stream_ids {
+            if let Ok(stream) = self.get_stream(user_id, &stream_id).await {
+                streams.push(stream);
+            }
+        }
+
+        return Ok(streams);
+    }
+
     #[tracing::instrument]
     pub async fn get_stream(&self, user_id: &UserId, stream_id: &StreamId) -> Result<Stream> {
-        let stream_id = user_stream_id(user_id, stream_id);
-        let db_lock = self.streams.get(&stream_id).ok_or(Error::StreamNotFound)?;
+        let user_stream_id = user_stream_id(user_id, stream_id);
+        let db_lock = self.streams.get(&user_stream_id).ok_or(Error::StreamNotFound)?;
 
         let db = db_lock.lock().await;
         let revision = db.revision();
@@ -232,6 +267,7 @@ impl AppState {
         let usage = db.file_len().await?;
 
         Ok(Stream {
+            id: stream_id.to_string(),
             usage,
             revision,
             state,
