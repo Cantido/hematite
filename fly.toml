@@ -8,6 +8,10 @@ primary_region = "ord"
 
 [build]
 
+[env]
+  HEMATITE_OIDC_URL = "https://96lo74.logto.app/oidc"
+  HEMATITE_JWT_AUD = "https://hematitedb.fly.dev"
+
 [http_service]
   internal_port = 8080
   force_https = true

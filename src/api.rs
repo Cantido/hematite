@@ -16,21 +16,22 @@ use axum::{
         Response,
     }
 };
-use anyhow::{bail, Result};
+use anyhow::{bail, Result, anyhow, Context};
 use axum_macros::debug_handler;
 use cloudevents::Event;
 use jsonwebtoken::{
     decode,
     errors::ErrorKind,
-    Validation, DecodingKey, Algorithm,
+    Validation, DecodingKey, Algorithm, decode_header,
 };
+use reqwest::Url;
 use tracing::{error, debug};
 use serde::{Deserialize, Serialize};
 use time::{OffsetDateTime, format_description::well_known::Rfc2822};
 use uuid::Uuid;
 use std::{
     collections::HashMap,
-    sync::Arc,
+    sync::Arc, env,
 };
 use crate::{
     db::{self, ExpectedRevision},
@@ -228,28 +229,50 @@ struct JwksResponse {
 
 #[derive(Deserialize)]
 struct JsonWebKey {
-    kty: String,
-    #[serde(rename = "use")]
-    key_use: String,
     kid: String,
-    alg: String,
-    crv: String,
     x: String,
     y: String,
 }
 
+#[derive(Deserialize)]
+struct OpenIdConfiguration {
+    issuer: String,
+    jwks_uri: String,
+}
+
 async fn authorize_current_user(token: &str) -> Result<User> {
-    let jwks_body: JwksResponse =
-        reqwest::get("https://96lo74.logto.app/oidc/jwks").await?
+    let oidc_url: Url =
+        env::var("HEMATITE_OIDC_URL")
+        .with_context(|| "Env var HEMATITE_OIDC_URL is missing.")?
+        .parse()
+        .with_context(|| "Failed to parse HEMATITE_OIDC_URL as a URL")?;
+
+    let oidc_config_url = oidc_url.join("/.well-known/openid-configuration")
+        .with_context(|| "Failed to build openid-configuration URL")?;
+
+    let oidc_config: OpenIdConfiguration =
+        reqwest::get(oidc_config_url).await?
         .json().await?;
 
-    let jwk = &jwks_body.keys[0];
+    let jwks_body: JwksResponse =
+        reqwest::get(&oidc_config.jwks_uri).await?
+        .json().await?;
+
+    let kid = decode_header(&token)?.kid
+        .ok_or(anyhow!("Failed to get kid from jwt header."))?;
+
+    let jwk = &jwks_body.keys.iter().find(|key| key.kid == kid)
+        .ok_or(anyhow!("Couldn't find key in jwks response"))?;
 
     let decoding_key = DecodingKey::from_ec_components(&jwk.x, &jwk.y).unwrap();
 
+    let audience =
+        env::var("HEMATITE_JWT_AUD")
+        .with_context(|| "Env var HEMATITE_JWT_AUD is missing.")?;
+
     let mut validation = Validation::new(Algorithm::ES384);
-    validation.set_issuer(&["https://96lo74.logto.app/oidc"]);
-    validation.set_audience(&["https://hematitedb.fly.dev"]);
+    validation.set_issuer(&[oidc_config.issuer]);
+    validation.set_audience(&[audience]);
 
     let token_result = decode::<Claims>(&token, &decoding_key, &validation)?;
 

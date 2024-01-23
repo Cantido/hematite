@@ -40,7 +40,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
 
-    let _ = std::env::var("HEMATITE_JWT_SECRET").expect("Env var HEMATITE_JWT_SECRET is required");
     let streams_dir = env::var("HEMATITE_STREAMS_DIR").expect("Env var HEMATITE_STREAMS_DIR is required");
     let streams_dir = PathBuf::from(streams_dir);
     fs::create_dir_all(&streams_dir).expect("Could not create stream database directory.");
