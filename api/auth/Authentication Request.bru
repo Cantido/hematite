@@ -1,0 +1,26 @@
+meta {
+  name: Authentication Request
+  type: http
+  seq: 1
+}
+
+post {
+  url: https://96lo74.logto.app/oidc/token
+  body: formUrlEncoded
+  auth: basic
+}
+
+auth:basic {
+  username: l7h2n6sdf0iksbrsk4l4n
+  password: {{clientSecret}}
+}
+
+body:form-urlencoded {
+  grant_type: client_credentials
+  resource: https%3A%2F%2Fhematitedb.fly.dev
+  scope: read%3Astreams%20write%3Astreams
+}
+
+vars:post-response {
+  accessToken: res.body.access_token
+}

@@ -21,9 +21,8 @@ use axum_macros::debug_handler;
 use cloudevents::Event;
 use jsonwebtoken::{
     decode,
-    DecodingKey,
     errors::ErrorKind,
-    Validation,
+    Validation, DecodingKey, Algorithm,
 };
 use tracing::{error, debug};
 use serde::{Deserialize, Serialize};
@@ -176,7 +175,7 @@ async fn auth(mut req: Request, next: Next) -> Result<Response, Response> {
             return Err(resp);
         };
 
-    match authorize_current_user(auth_token) {
+    match authorize_current_user(auth_token).await {
         Ok(current_user) => {
             req.extensions_mut().insert(current_user);
             return Ok(next.run(req).await);
@@ -222,13 +221,37 @@ async fn auth(mut req: Request, next: Next) -> Result<Response, Response> {
     }
 }
 
-fn authorize_current_user(token: &str) -> Result<User> {
-    let secret = std::env::var("HEMATITE_JWT_SECRET").expect("Env var HEMATITE_JWT_SECRET is required.");
+#[derive(Deserialize)]
+struct JwksResponse {
+    keys: Vec<JsonWebKey>
+}
 
-    let mut validation = Validation::default();
-    validation.set_audience(&["hematite"]);
+#[derive(Deserialize)]
+struct JsonWebKey {
+    kty: String,
+    #[serde(rename = "use")]
+    key_use: String,
+    kid: String,
+    alg: String,
+    crv: String,
+    x: String,
+    y: String,
+}
 
-    let token_result = decode::<Claims>(&token, &DecodingKey::from_secret(&secret.into_bytes()), &validation)?;
+async fn authorize_current_user(token: &str) -> Result<User> {
+    let jwks_body: JwksResponse =
+        reqwest::get("https://96lo74.logto.app/oidc/jwks").await?
+        .json().await?;
+
+    let jwk = &jwks_body.keys[0];
+
+    let decoding_key = DecodingKey::from_ec_components(&jwk.x, &jwk.y).unwrap();
+
+    let mut validation = Validation::new(Algorithm::ES384);
+    validation.set_issuer(&["https://96lo74.logto.app/oidc"]);
+    validation.set_audience(&["https://hematitedb.fly.dev"]);
+
+    let token_result = decode::<Claims>(&token, &decoding_key, &validation)?;
 
     if let Ok(user_id) = token_result.claims.sub.parse() {
         Ok(User{id: user_id})
