@@ -16,14 +16,10 @@ use axum::{
         Response,
     }
 };
-use anyhow::{bail, Result, anyhow, Context};
+use anyhow::{bail, Result};
 use axum_macros::debug_handler;
 use cloudevents::Event;
-use jsonwebtoken::{
-    decode,
-    errors::ErrorKind,
-    Validation, DecodingKey, Algorithm, decode_header,
-};
+use jsonwebtoken::errors::ErrorKind;
 use tracing::{error, debug};
 use serde::{Deserialize, Serialize};
 use time::{OffsetDateTime, format_description::well_known::Rfc2822};
@@ -31,7 +27,7 @@ use url::Url;
 use uuid::Uuid;
 use std::{
     collections::HashMap,
-    sync::Arc, env,
+    sync::Arc, path::PathBuf,
 };
 use crate::{
     db::{self, ExpectedRevision},
@@ -39,7 +35,7 @@ use crate::{
         self,
         AppState,
         User,
-    }
+    }, openid::OpenIdClient
 };
 
 #[derive(Debug, Default, Serialize)]
@@ -121,11 +117,6 @@ impl<T> ApiResource<T> {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct Claims {
-    sub: String,
-}
-
 async fn health(state: State<Arc<AppState>>) -> Response {
     let health = state.check_health();
 
@@ -135,17 +126,24 @@ async fn health(state: State<Arc<AppState>>) -> Response {
     ).into_response();
 }
 
-pub fn stream_routes() -> Router<Arc<AppState>> {
-    Router::new()
+pub async fn stream_routes(streams_dir: PathBuf, oidc_url: Url) -> Result<Router<()>> {
+    let state = Arc::new(AppState::new(streams_dir).await?);
+
+    let oidc_client = Arc::new(OpenIdClient::new(oidc_url));
+
+    let router = Router::new()
         .route("/streams", get(get_streams))
         .route("/streams/:stream/events/:rownum", get(get_event))
         .route("/streams/:stream/events", post(post_event).get(get_event_index))
         .route("/streams/:stream", get(get_stream).delete(delete_stream))
         .route("/health", get(health))
-        .layer(middleware::from_fn(auth))
+        .layer(middleware::from_fn_with_state(oidc_client, auth))
+        .with_state(state);
+
+    Ok(router)
 }
 
-async fn auth(mut req: Request, next: Next) -> Result<Response, Response> {
+async fn auth(oidc: State<Arc<OpenIdClient>>, mut req: Request, next: Next) -> Result<Response, Response> {
     let auth_token = req.headers()
         .get(header::AUTHORIZATION)
         .and_then(|header| header.to_str().ok())
@@ -176,8 +174,10 @@ async fn auth(mut req: Request, next: Next) -> Result<Response, Response> {
             return Err(resp);
         };
 
-    match authorize_current_user(auth_token).await {
-        Ok(current_user) => {
+    match oidc.authorize_current_user(auth_token).await {
+        Ok(claims) => {
+            let current_user = User { id: claims.sub };
+
             req.extensions_mut().insert(current_user);
             return Ok(next.run(req).await);
         },
@@ -219,73 +219,6 @@ async fn auth(mut req: Request, next: Next) -> Result<Response, Response> {
 
             return Err(resp);
         }
-    }
-}
-
-#[derive(Deserialize)]
-struct JwksResponse {
-    keys: Vec<JsonWebKey>
-}
-
-#[derive(Deserialize)]
-struct JsonWebKey {
-    kid: String,
-    x: String,
-    y: String,
-}
-
-#[derive(Deserialize)]
-struct OpenIdConfiguration {
-    issuer: String,
-    jwks_uri: String,
-}
-
-async fn authorize_current_user(token: &str) -> Result<User> {
-    let oidc_url: Url =
-        env::var("HEMATITE_OIDC_URL")
-        .with_context(|| "Env var HEMATITE_OIDC_URL is missing.")?
-        .parse()
-        .with_context(|| "Failed to parse HEMATITE_OIDC_URL as a URL")?;
-
-    let oidc_config_url = oidc_url.join(".well-known/openid-configuration")
-        .with_context(|| "Failed to build openid-configuration URL")?;
-
-    let oidc_config: OpenIdConfiguration =
-        reqwest::get(oidc_config_url.clone()).await
-        .with_context(|| format!("Failed to get OIDC config url at {}", oidc_config_url))?
-        .json().await
-        .with_context(|| format!("Failed to decode OIDC config as JSON from {}", oidc_config_url))?;
-
-    let jwks_body: JwksResponse =
-        reqwest::get(&oidc_config.jwks_uri).await
-        .with_context(|| format!("Failed to get JWKS response at URL {}", oidc_config.jwks_uri))?
-        .json().await
-        .with_context(|| format!("Failed to decode JWKS response as JSON from {}", oidc_config.jwks_uri))?;
-
-    let kid = decode_header(&token)
-        .with_context(|| "Failed to decode JWT header")?
-        .kid
-        .ok_or(anyhow!("Failed to get kid from jwt header."))?;
-
-    let jwk = &jwks_body.keys.iter().find(|key| key.kid == kid)
-        .ok_or(anyhow!("Couldn't find key in jwks response"))?;
-
-    let decoding_key = DecodingKey::from_ec_components(&jwk.x, &jwk.y).unwrap();
-
-    let audience =
-        env::var("HEMATITE_JWT_AUD")
-        .with_context(|| "Env var HEMATITE_JWT_AUD is missing.")?;
-
-    let mut validation = Validation::new(Algorithm::ES384);
-    validation.set_issuer(&[oidc_config.issuer]);
-    validation.set_audience(&[audience]);
-
-    let token_result = decode::<Claims>(&token, &decoding_key, &validation)?;
-
-    if let Ok(user_id) = token_result.claims.sub.parse() {
-        Ok(User{id: user_id})
-    } else {
-        bail!("User ID is not a valid UUID")
     }
 }
 

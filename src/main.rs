@@ -1,11 +1,10 @@
+use anyhow::Context;
 use axum::{response::Response, http::{header, StatusCode}, extract::Request, middleware::{Next, self}};
-use hematite::{
-    api,
-    server::AppState,
-};
+use hematite::api;
 use tracing::info;
 use tracing_subscriber::{prelude::*, filter::EnvFilter, fmt, Registry};
-use std::{env, fs, path::PathBuf, sync::Arc};
+use url::Url;
+use std::{env, fs, path::PathBuf};
 
 
 #[tokio::main]
@@ -39,20 +38,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::subscriber::set_global_default(subscriber)?;
     }
 
-
     let streams_dir = env::var("HEMATITE_STREAMS_DIR").expect("Env var HEMATITE_STREAMS_DIR is required");
     let streams_dir = PathBuf::from(streams_dir);
     fs::create_dir_all(&streams_dir).expect("Could not create stream database directory.");
 
+    let oidc_url: Url =
+        env::var("HEMATITE_OIDC_URL")
+        .with_context(|| "Env var HEMATITE_OIDC_URL is missing.")?
+        .parse()
+        .with_context(|| "Failed to parse HEMATITE_OIDC_URL as a URL")?;
+
     info!("Starting Hematite DB version: {}", hematite::build::VERSION);
     info!("Stream database directory: {}", streams_dir.display());
 
-    let state = Arc::new(AppState::new(streams_dir).await?);
-
-    let app = api::stream_routes()
+    let app = api::stream_routes(streams_dir, oidc_url).await?
         .layer(middleware::from_fn(apply_secure_headers))
-        .fallback(fallback)
-        .with_state(state);
+        .fallback(fallback);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
 

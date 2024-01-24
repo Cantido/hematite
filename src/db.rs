@@ -1,4 +1,4 @@
-use anyhow::{ensure, Context, Result, anyhow};
+use anyhow::{ensure, Context, Result};
 use cloudevents::event::Event;
 use cloudevents::*;
 use serde::Serialize;
