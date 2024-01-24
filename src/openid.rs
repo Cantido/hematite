@@ -11,12 +11,12 @@ pub struct Claims {
     pub sub: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct JwksResponse {
     keys: Vec<JsonWebKey>
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct JsonWebKey {
     kid: String,
     x: String,
@@ -32,6 +32,7 @@ struct OpenIdConfiguration {
 pub struct OpenIdClient {
     base_url: Url,
     oidc_config: Mutex<Option<OpenIdConfiguration>>,
+    jwks: Mutex<Option<JwksResponse>>,
 }
 
 impl OpenIdClient {
@@ -39,6 +40,7 @@ impl OpenIdClient {
         Self {
             base_url,
             oidc_config: Mutex::new(None),
+            jwks: Mutex::new(None),
         }
     }
 
@@ -80,19 +82,39 @@ impl OpenIdClient {
             let oidc_config_url = self.base_url.join(".well-known/openid-configuration")
                 .with_context(|| "Failed to build openid-configuration URL")?;
 
-            reqwest::get(oidc_config_url.clone()).await
-            .with_context(|| format!("Failed to get OIDC config url at {}", oidc_config_url))?
-            .json().await
-            .with_context(|| format!("Failed to decode OIDC config as JSON from {}", oidc_config_url))
+            let oidc_cfg: OpenIdConfiguration =
+                reqwest::get(oidc_config_url.clone()).await
+                .with_context(|| format!("Failed to get OIDC config url at {}", oidc_config_url))?
+                .json().await
+                .with_context(|| format!("Failed to decode OIDC config as JSON from {}", oidc_config_url))?;
+
+            let cfg_opt = Some(oidc_cfg.clone());
+
+            std::mem::swap(&mut cfg_cache_opt.as_ref(), &mut cfg_opt.as_ref());
+
+            Ok(oidc_cfg.clone())
         }
     }
 
     async fn key(&self, kid: &str, oidc_config: &OpenIdConfiguration) -> Result<JsonWebKey> {
+        let jwks_cache_opt = self.jwks.lock().await;
+
         let jwks_body: JwksResponse =
-            reqwest::get(&oidc_config.jwks_uri).await
-            .with_context(|| format!("Failed to get JWKS response at URL {}", oidc_config.jwks_uri))?
-            .json().await
-            .with_context(|| format!("Failed to decode JWKS response as JSON from {}", oidc_config.jwks_uri))?;
+            if let Some(jwks_opt) = jwks_cache_opt.as_ref() {
+                jwks_opt.clone()
+            } else {
+                let jwks_body: JwksResponse =
+                    reqwest::get(&oidc_config.jwks_uri).await
+                    .with_context(|| format!("Failed to get JWKS response at URL {}", oidc_config.jwks_uri))?
+                    .json().await
+                    .with_context(|| format!("Failed to decode JWKS response as JSON from {}", oidc_config.jwks_uri))?;
+
+                let jwks_opt = Some(jwks_body.clone());
+
+                std::mem::swap(&mut jwks_cache_opt.as_ref(), &mut jwks_opt.as_ref());
+
+                jwks_body
+            };
 
         jwks_body.keys.into_iter().find(|key| key.kid == kid)
             .ok_or(anyhow!("Couldn't find key in jwks response"))
