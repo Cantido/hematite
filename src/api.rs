@@ -132,6 +132,8 @@ pub async fn stream_routes(streams_dir: PathBuf, oidc_url: Url) -> Result<Router
 
     let oidc_client = Arc::new(OpenIdClient::new(oidc_url));
 
+    oidc_client.refresh().await?;
+
     let router = Router::new()
         .route("/streams", get(get_streams))
         .route("/streams/:stream/events/:rownum", get(get_event))

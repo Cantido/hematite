@@ -46,6 +46,35 @@ impl OpenIdClient {
     }
 
     #[tracing::instrument]
+    pub async fn refresh(&self) -> Result<()> {
+        let oidc_config_url = self.base_url.join(".well-known/openid-configuration")
+            .with_context(|| "Failed to build openid-configuration URL")?;
+
+        let oidc_cfg: OpenIdConfiguration =
+            reqwest::get(oidc_config_url.clone()).await
+            .with_context(|| format!("Failed to get OIDC config url at {}", oidc_config_url))?
+            .json().await
+            .with_context(|| format!("Failed to decode OIDC config as JSON from {}", oidc_config_url))?;
+
+        let jwks_body: JwksResponse =
+            reqwest::get(&oidc_cfg.jwks_uri).await
+            .with_context(|| format!("Failed to get JWKS response at URL {}", oidc_cfg.jwks_uri))?
+            .json().await
+            .with_context(|| format!("Failed to decode JWKS response as JSON from {}", oidc_cfg.jwks_uri))?;
+
+        let mut cfg_cache_opt = self.oidc_config.lock().await;
+        let mut cfg_opt = Some(oidc_cfg.clone());
+        std::mem::swap(&mut *cfg_cache_opt, &mut cfg_opt);
+
+        let mut jwks_opt = Some(jwks_body.clone());
+        let mut jwks_cache_opt = self.jwks.lock().await;
+        std::mem::swap(&mut *jwks_cache_opt, &mut jwks_opt);
+
+        Ok(())
+    }
+
+
+    #[tracing::instrument]
     pub async fn authorize_current_user(
         &self,
         token: &str,
