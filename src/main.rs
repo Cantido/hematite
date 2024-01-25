@@ -9,8 +9,6 @@ use std::{env, fs, path::PathBuf};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::init();
-
     let telemetry = {
         let otlp_exporter = opentelemetry_otlp::new_exporter().tonic();
 
@@ -22,8 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing_opentelemetry::layer().with_tracer(tracer)
     };
 
-    let filter_layer = EnvFilter::try_from_default_env()
-        .or_else(|_| EnvFilter::try_new("info"))?;
+    let filter_layer = EnvFilter::from_default_env();
 
     if env::var("OTEL_SDL_DISABLED").unwrap_or("false".to_string()) == "true" {
         let subscriber = Registry::default()

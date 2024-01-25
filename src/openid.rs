@@ -53,7 +53,7 @@ impl OpenIdClient {
         let kid = decode_header(&token)
             .with_context(|| "Failed to decode JWT header")?
             .kid
-            .ok_or(anyhow!("Failed to get kid from jwt header."))?;
+            .with_context(|| "Failed to get kid from jwt header.")?;
 
         let jwk = self.key(&kid, &oidc_config).await?;
 

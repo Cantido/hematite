@@ -13,7 +13,7 @@ export const options = {
 export default function() {
     const headers = {
         "Content-Type": "application/json",
-        "Authorization": "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwiYXVkIjoiaGVtYXRpdGUiLCJpYXQiOjE3MDQ3NTY3NTAsImV4cCI6OTk5OTk5OTk5OX0.am-46Z8g0-Ou-lcBPtm8hymjdZYWBl1qfYeFfvTO8CI"
+        "Authorization": `Bearer ${__ENV.HEMATITE_AUTH_TOKEN}`
     };
 
     const stream = uuidv4();
