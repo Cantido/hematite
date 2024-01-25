@@ -126,6 +126,7 @@ async fn health(state: State<Arc<AppState>>) -> Response {
     ).into_response();
 }
 
+#[tracing::instrument]
 pub async fn stream_routes(streams_dir: PathBuf, oidc_url: Url) -> Result<Router<()>> {
     let state = Arc::new(AppState::new(streams_dir).await?);
 
@@ -143,6 +144,7 @@ pub async fn stream_routes(streams_dir: PathBuf, oidc_url: Url) -> Result<Router
     Ok(router)
 }
 
+#[tracing::instrument]
 async fn auth(oidc: State<Arc<OpenIdClient>>, mut req: Request, next: Next) -> Result<Response, Response> {
     let auth_token = req.headers()
         .get(header::AUTHORIZATION)
@@ -222,6 +224,7 @@ async fn auth(oidc: State<Arc<OpenIdClient>>, mut req: Request, next: Next) -> R
     }
 }
 
+#[tracing::instrument]
 #[debug_handler]
 async fn get_event(state: State<Arc<AppState>>, Extension(user): Extension<User>, Path((stream_id, rownum)): Path<(String, u64)>) -> Response {
     let event_result = state.get_event(&user.id, &stream_id, rownum).await;
@@ -256,6 +259,7 @@ async fn get_event(state: State<Arc<AppState>>, Extension(user): Extension<User>
     }
 }
 
+#[tracing::instrument]
 #[debug_handler]
 async fn get_event_index(state: State<Arc<AppState>>, Extension(user): Extension<User>, Path(stream_id): Path<String>, Query(query): Query<HashMap<String, String>>) -> Response {
     let start = query.get("page[offset]").unwrap_or(&"0".to_string()).parse().unwrap_or(0).max(0);
@@ -297,6 +301,7 @@ async fn get_event_index(state: State<Arc<AppState>>, Extension(user): Extension
     }
 }
 
+#[tracing::instrument]
 #[debug_handler]
 async fn get_streams(
     state: State<Arc<AppState>>,
@@ -352,6 +357,7 @@ async fn get_streams(
     }
 }
 
+#[tracing::instrument]
 #[debug_handler]
 async fn get_stream(state: State<Arc<AppState>>, Extension(user): Extension<User>, Path(stream_id): Path<String>) -> Response {
     let get_result = state.get_stream(&user.id, &stream_id).await;
@@ -401,6 +407,7 @@ async fn get_stream(state: State<Arc<AppState>>, Extension(user): Extension<User
     }
 }
 
+#[tracing::instrument]
 #[debug_handler]
 async fn delete_stream(state: State<Arc<AppState>>, Extension(user): Extension<User>, Path(stream_id): Path<String>) -> Response {
     let delete_result = state.delete_stream(&user.id, &stream_id).await;
@@ -440,6 +447,7 @@ enum PostEventPayload {
     Batch(Vec<Event>),
 }
 
+#[tracing::instrument]
 #[debug_handler]
 async fn post_event(
     state: State<Arc<AppState>>,

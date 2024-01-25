@@ -11,24 +11,25 @@ pub struct Claims {
     pub sub: String,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct JwksResponse {
     keys: Vec<JsonWebKey>
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct JsonWebKey {
     kid: String,
     x: String,
     y: String,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Debug, Clone)]
 struct OpenIdConfiguration {
     issuer: String,
     jwks_uri: String,
 }
 
+#[derive(Debug)]
 pub struct OpenIdClient {
     base_url: Url,
     oidc_config: Mutex<Option<OpenIdConfiguration>>,
@@ -44,6 +45,7 @@ impl OpenIdClient {
         }
     }
 
+    #[tracing::instrument]
     pub async fn authorize_current_user(
         &self,
         token: &str,
@@ -74,7 +76,7 @@ impl OpenIdClient {
     }
 
     async fn oidc_config(&self) -> Result<OpenIdConfiguration> {
-        let cfg_cache_opt = self.oidc_config.lock().await;
+        let mut cfg_cache_opt = self.oidc_config.lock().await;
 
         if let Some(oidc_cfg) = cfg_cache_opt.as_ref() {
             Ok(oidc_cfg.clone())
@@ -88,16 +90,16 @@ impl OpenIdClient {
                 .json().await
                 .with_context(|| format!("Failed to decode OIDC config as JSON from {}", oidc_config_url))?;
 
-            let cfg_opt = Some(oidc_cfg.clone());
+            let mut cfg_opt = Some(oidc_cfg.clone());
 
-            std::mem::swap(&mut cfg_cache_opt.as_ref(), &mut cfg_opt.as_ref());
+            std::mem::swap(&mut *cfg_cache_opt, &mut cfg_opt);
 
             Ok(oidc_cfg.clone())
         }
     }
 
     async fn key(&self, kid: &str, oidc_config: &OpenIdConfiguration) -> Result<JsonWebKey> {
-        let jwks_cache_opt = self.jwks.lock().await;
+        let mut jwks_cache_opt = self.jwks.lock().await;
 
         let jwks_body: JwksResponse =
             if let Some(jwks_opt) = jwks_cache_opt.as_ref() {
@@ -109,9 +111,9 @@ impl OpenIdClient {
                     .json().await
                     .with_context(|| format!("Failed to decode JWKS response as JSON from {}", oidc_config.jwks_uri))?;
 
-                let jwks_opt = Some(jwks_body.clone());
+                let mut jwks_opt = Some(jwks_body.clone());
 
-                std::mem::swap(&mut jwks_cache_opt.as_ref(), &mut jwks_opt.as_ref());
+                std::mem::swap(&mut *jwks_cache_opt, &mut jwks_opt);
 
                 jwks_body
             };

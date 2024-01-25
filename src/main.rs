@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let filter_layer = EnvFilter::from_default_env();
 
-    if env::var("OTEL_SDL_DISABLED").unwrap_or("false".to_string()) == "true" {
+    if env::var("OTEL_SDL_DISABLED").unwrap_or("false".to_string()) == "false" {
         let subscriber = Registry::default()
             .with(filter_layer)
             .with(telemetry)
