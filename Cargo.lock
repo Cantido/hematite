@@ -778,7 +778,7 @@ dependencies = [
  "log",
  "opentelemetry-otlp",
  "opentelemetry_api",
- "opentelemetry_sdk 0.22.0",
+ "opentelemetry_sdk 0.22.1",
  "rand",
  "reqwest",
  "serde",
@@ -1391,7 +1391,7 @@ dependencies = [
  "opentelemetry 0.22.0",
  "opentelemetry-proto",
  "opentelemetry-semantic-conventions",
- "opentelemetry_sdk 0.22.0",
+ "opentelemetry_sdk 0.22.1",
  "prost",
  "thiserror",
  "tokio",
@@ -1405,7 +1405,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a8fddc9b68f5b80dae9d6f510b88e02396f006ad48cac349411fbecc80caae4"
 dependencies = [
  "opentelemetry 0.22.0",
- "opentelemetry_sdk 0.22.0",
+ "opentelemetry_sdk 0.22.1",
  "prost",
  "tonic",
 ]
@@ -1454,9 +1454,9 @@ dependencies = [
 
 [[package]]
 name = "opentelemetry_sdk"
-version = "0.22.0"
+version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c504dfa1a419d3485293c0331a3aa638dd58362ac5e1209142cc21e151256ae4"
+checksum = "9e90c7113be649e31e9a0f8b5ee24ed7a16923b322c3c5ab6367469c049d6b7e"
 dependencies = [
  "async-trait",
  "crossbeam-channel",
