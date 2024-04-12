@@ -1,5 +1,4 @@
 use anyhow::{ensure, Context, Result};
-use cloudevents::event::Event;
 use cloudevents::*;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -40,7 +39,6 @@ pub struct Database {
     state: RunState,
     path: PathBuf,
     primary_index: BTreeMap<u64, u64>,
-    source_id_index: BTreeMap<(String, String), u64>,
 }
 
 impl fmt::Debug for Database {
@@ -55,7 +53,6 @@ impl Database {
             state: RunState::Stopped,
             path: path.to_path_buf(),
             primary_index: BTreeMap::new(),
-            source_id_index: BTreeMap::new(),
         }
     }
 
@@ -76,10 +73,7 @@ impl Database {
 
         while let Some(line) = lines.next_line().await? {
             let rowlen: u64 = line.len() as u64;
-
-            let event = decode_event(line).with_context(|| format!("Failed to decode line {} of DB at {:?}", rowid + 1, events_path))?;
             self.primary_index.insert(rowid as u64, offset);
-            self.source_id_index.insert((event.source().to_string(), event.id().to_string()), rowid as u64);
 
             // offset addend is `rowlen + 1` because `BufReader::lines()` strips newlines for us
             offset += rowlen + 1;
@@ -211,8 +205,6 @@ impl Database {
         let mut bytes = Vec::new();
 
         for event in events.iter() {
-            ensure!(!self.source_id_index.contains_key(&(event.source().to_string(), event.id().to_string())), Error::SourceIdConflict);
-
             let json = serde_json::to_string(&event).with_context(|| format!("Failed to JSONify event"))?;
 
             event_lengths.push(bytes.len());
@@ -235,7 +227,7 @@ impl Database {
         let mut last_revision = 0;
         let mut prev_offset = position;
 
-        for (event, event_length) in events.iter().zip(event_lengths.iter()) {
+        for event_length in event_lengths.iter() {
             let (next_event_rownum, next_event_offset) = match self.primary_index.last_key_value() {
                 None => (0, 0),
                 Some((last_rownum, _offset)) => (last_rownum + 1, prev_offset),
@@ -245,10 +237,6 @@ impl Database {
             last_revision = next_event_rownum;
 
             self.primary_index.insert(next_event_rownum, next_event_offset);
-            self.source_id_index.insert(
-                (event.source().to_string(), event.id().to_string()),
-                next_event_rownum,
-            );
         }
 
         Ok(last_revision)
@@ -260,7 +248,6 @@ impl Database {
         fs::remove_file(&events_path).await
             .with_context(|| format!("Failed to delete datbase file at {:?}", events_path))?;
         self.primary_index.clear();
-        self.source_id_index.clear();
 
         Ok(())
     }
@@ -307,23 +294,6 @@ mod tests {
 
         assert_eq!(rownum, 0);
         assert_eq!(result.id(), event.id());
-    }
-
-    #[tokio::test]
-    async fn cannot_write_duplicate_event() {
-        let test_file = tempdir().unwrap();
-
-        let mut db = Database::new(test_file.path());
-        db.start().await.expect("Could not start DB");
-
-        let event = Event::default();
-
-        let rownum =
-            db.append(vec![event.clone()], ExpectedRevision::Any).await
-            .expect("Could not write to the DB");
-
-        assert_eq!(rownum, 0);
-        assert!(db.append(vec![event.clone()], ExpectedRevision::Any).await.is_err());
     }
 
     #[tokio::test]
