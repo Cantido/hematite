@@ -94,14 +94,14 @@ impl AppState {
                     continue;
                 }
 
-                for db_file_result in user_dir
+                for db_dir_result in user_dir
                     .path()
                     .read_dir()
                     .with_context(|| format!("Couldn't read user directory at {:?}", user_dir))?
                 {
-                    if let Ok(db_file) = db_file_result {
-                        let filepath = db_file.path();
-                        let encoded_stream_id = filepath.file_stem().unwrap().to_str().unwrap();
+                    if let Ok(db_dir) = db_dir_result {
+                        let db_dir_path = db_dir.path();
+                        let encoded_stream_id = db_dir_path.file_name().unwrap().to_str().unwrap();
                         let stream_id_bytes = BASE32_NOPAD
                             .decode(encoded_stream_id.as_bytes())
                             .with_context(|| format!("Expected file in stream dir to have a Base32 no-pad encoded filename, but it was {}", encoded_stream_id))?;
@@ -159,8 +159,7 @@ impl AppState {
             let stream_file_name: String = BASE32_NOPAD.encode(stream_id.1.as_bytes());
             let db_path =
                 user_dir_path
-                .join(stream_file_name)
-                .with_extension("hemadb");
+                .join(stream_file_name);
 
             let db = Database::new(&db_path);
 

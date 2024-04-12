@@ -60,12 +60,14 @@ impl Database {
     }
 
     async fn load(&mut self) -> Result<()> {
+        let events_path = self.events_path();
+
         let file = File::options()
             .read(true)
             .append(true)
             .create(true)
-            .open(&self.path).await
-            .with_context(|| format!("Could not open file to create DB at {:?}", self.path))?;
+            .open(&events_path).await
+            .with_context(|| format!("Could not open file to create DB at {:?}", events_path))?;
 
         let mut offset = 0u64;
         let mut rowid = 0u64;
@@ -75,7 +77,7 @@ impl Database {
         while let Some(line) = lines.next_line().await? {
             let rowlen: u64 = line.len() as u64;
 
-            let event = decode_event(line).with_context(|| format!("Failed to decode line {} of DB at {:?}", rowid + 1, self.path))?;
+            let event = decode_event(line).with_context(|| format!("Failed to decode line {} of DB at {:?}", rowid + 1, events_path))?;
             self.primary_index.insert(rowid as u64, offset);
             self.source_id_index.insert((event.source().to_string(), event.id().to_string()), rowid as u64);
 
@@ -103,20 +105,24 @@ impl Database {
 
     #[tracing::instrument]
     pub async fn last_modified(&self) -> Result<u64> {
-        fs::metadata(&self.path).await
-            .with_context(|| format!("Failed to access metadata of DB path {:?}", &self.path))?
+        let events_path = self.events_path();
+
+        fs::metadata(&events_path).await
+            .with_context(|| format!("Failed to access metadata of DB path {:?}", &events_path))?
             .modified()
-            .with_context(|| format!("Failed to access modified time of DB path {:?}", &self.path))?
+            .with_context(|| format!("Failed to access modified time of DB path {:?}", &events_path))?
             .duration_since(SystemTime::UNIX_EPOCH)
-            .with_context(|| format!("Failed to convert mtime to unix time for DB path {:?}", &self.path))
+            .with_context(|| format!("Failed to convert mtime to unix time for DB path {:?}", &events_path))
             .map(|d| d.as_secs())
     }
 
     #[tracing::instrument]
     pub async fn file_len(&self) -> Result<u64> {
+        let events_path = self.events_path();
+
         let size =
-            fs::metadata(&self.path).await
-                .with_context(|| format!("Failed to access metadata of DB path {:?}", &self.path))?
+            fs::metadata(&events_path).await
+                .with_context(|| format!("Failed to access metadata of DB path {:?}", &events_path))?
                 .len();
 
         Ok(size)
@@ -136,12 +142,14 @@ impl Database {
     pub async fn query(&mut self, start: u64, limit: usize) -> Result<Vec<Event>> {
         ensure!(self.state == RunState::Running, Error::Stopped);
 
+        let events_path = self.events_path();
+
         let mut file = File::options()
             .read(true)
             .append(true)
             .create(true)
-            .open(&self.path).await
-            .with_context(|| format!("Could not open file to query DB at {:?}", self.path))?;
+            .open(&events_path).await
+            .with_context(|| format!("Could not open file to query DB at {:?}", events_path))?;
 
         let row_offset = match self.primary_index.get(&start) {
             Some(row_offset) => row_offset,
@@ -149,7 +157,7 @@ impl Database {
         };
         let _position = file
             .seek(SeekFrom::Start(*row_offset)).await
-            .with_context(|| format!("Failed to seek to row {} (offset {}) from DB at {:?}", start, row_offset, self.path))?;
+            .with_context(|| format!("Failed to seek to row {} (offset {}) from DB at {:?}", start, row_offset, events_path))?;
 
         let mut events = vec![];
 
@@ -197,6 +205,8 @@ impl Database {
     async fn write_events(&mut self, events: &Vec<Event>) -> Result<u64> {
         ensure!(!events.is_empty(), "Events list cannot be empty");
 
+        let events_path = self.events_path();
+
         let mut event_lengths = Vec::new();
         let mut bytes = Vec::new();
 
@@ -213,14 +223,14 @@ impl Database {
             .read(true)
             .append(true)
             .create(true)
-            .open(&self.path).await
-            .with_context(|| format!("Failed to open file for DB at {:?}", self.path))?;
+            .open(&events_path).await
+            .with_context(|| format!("Failed to open file for DB at {:?}", events_path))?;
 
         let position = file.seek(SeekFrom::End(0)).await
-            .with_context(|| format!("Failed to seek to end of file for DB at {:?}", self.path))?;
+            .with_context(|| format!("Failed to seek to end of file for DB at {:?}", events_path))?;
 
         file.write_all(&bytes).await
-            .with_context(|| format!("Failed to write event to file for DB at {:?}", self.path))?;
+            .with_context(|| format!("Failed to write event to file for DB at {:?}", events_path))?;
 
         let mut last_revision = 0;
         let mut prev_offset = position;
@@ -245,12 +255,18 @@ impl Database {
     }
 
     pub async fn delete(&mut self) -> anyhow::Result<()> {
-        fs::remove_file(&self.path).await
-            .with_context(|| format!("Failed to delete datbase file at {:?}", self.path))?;
+        let events_path = self.events_path();
+
+        fs::remove_file(&events_path).await
+            .with_context(|| format!("Failed to delete datbase file at {:?}", events_path))?;
         self.primary_index.clear();
         self.source_id_index.clear();
 
         Ok(())
+    }
+
+    fn events_path(&self) -> PathBuf {
+        self.path.join("events.ndjson")
     }
 }
 
@@ -265,40 +281,15 @@ fn decode_event(row: String) -> Result<Event> {
 mod tests {
     use cloudevents::event::Event;
     use cloudevents::*;
-    use std::path::PathBuf;
+    use tempfile::tempdir;
 
     use crate::db::ExpectedRevision;
 
     use super::Database;
 
-    struct TestFile(PathBuf);
-
-    impl TestFile {
-        pub fn new(filename: &str) -> Self {
-            let mut tmp = std::env::temp_dir();
-            tmp.push(filename);
-            Self(tmp)
-        }
-
-        pub fn path(&self) -> &PathBuf {
-            &self.0
-        }
-
-        pub fn delete(&self) -> std::io::Result<()> {
-            std::fs::remove_file(&self.0)
-        }
-    }
-
-    impl Drop for TestFile {
-        fn drop(&mut self) {
-            let _ = self.delete();
-        }
-    }
-
     #[tokio::test]
     async fn can_write_and_read() {
-        let test_file = TestFile::new("writereadtest.db");
-        let _ = test_file.delete();
+        let test_file = tempdir().unwrap();
 
         let mut db = Database::new(test_file.path());
         db.start().await.expect("Could not start DB");
@@ -320,8 +311,7 @@ mod tests {
 
     #[tokio::test]
     async fn cannot_write_duplicate_event() {
-        let test_file = TestFile::new("writereadtest.db");
-        let _ = test_file.delete();
+        let test_file = tempdir().unwrap();
 
         let mut db = Database::new(test_file.path());
         db.start().await.expect("Could not start DB");
@@ -338,8 +328,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_nonexistent() {
-        let test_file = TestFile::new("readnonexistent.db");
-        let _ = test_file.delete();
+        let test_file = tempdir().unwrap();
 
         let mut db = Database::new(test_file.path());
         db.start().await.expect("Could not start DB");
@@ -351,8 +340,7 @@ mod tests {
 
     #[tokio::test]
     async fn can_write_expecting_no_stream_in_empty_db() {
-        let test_file = TestFile::new("nostreamemptydb.db");
-        let _ = test_file.delete();
+        let test_file = tempdir().unwrap();
 
         let mut db = Database::new(test_file.path());
         db.start().await.expect("Could not start DB");
@@ -365,8 +353,7 @@ mod tests {
 
     #[tokio::test]
     async fn cannot_write_expecting_no_stream_in_non_empty_db() {
-        let test_file = TestFile::new("nonemptydbexpectingnostream.db");
-        let _ = test_file.delete();
+        let test_file = tempdir().unwrap();
 
         let mut db = Database::new(test_file.path());
         db.start().await.expect("Could not start DB");
@@ -380,8 +367,7 @@ mod tests {
 
     #[tokio::test]
     async fn cannot_write_to_empty_db_expecting_stream_exists() {
-        let test_file = TestFile::new("emptyexpectexists.db");
-        let _ = test_file.delete();
+        let test_file = tempdir().unwrap();
 
         let mut db = Database::new(test_file.path());
         db.start().await.expect("Could not start DB");
@@ -393,8 +379,7 @@ mod tests {
 
     #[tokio::test]
     async fn cannot_write_expecting_revision_zero_with_empty_db() {
-        let test_file = TestFile::new("expectrevisionzerofailure.db");
-        let _ = test_file.delete();
+        let test_file = tempdir().unwrap();
 
         let mut db = Database::new(test_file.path());
         db.start().await.expect("Could not start DB");
@@ -406,8 +391,7 @@ mod tests {
 
     #[tokio::test]
     async fn can_write_expecting_revision_zero_with_present_row() {
-        let test_file = TestFile::new("expectrevisionzerofailure.db");
-        let _ = test_file.delete();
+        let test_file = tempdir().unwrap();
 
         let mut db = Database::new(test_file.path());
         db.start().await.expect("Could not start DB");
@@ -422,8 +406,7 @@ mod tests {
 
     #[tokio::test]
     async fn can_write_and_read_many() {
-        let test_file = TestFile::new("writereadmanytest.db");
-        let _ = test_file.delete();
+        let test_file = tempdir().unwrap();
 
         let mut db = Database::new(test_file.path());
         db.start().await.expect("Could not start DB");
