@@ -531,20 +531,6 @@ async fn post_event(
                         Json::from(body),
                     ).into_response();
                 },
-                Ok(db::Error::Stopped) => {
-                    let body = ApiError {
-                        id: error_id,
-                        title: "Stopped stream".to_string(),
-                        detail: Some("this stream is stopped and is not accepting requests".to_string()),
-                        source: None,
-                    }.into_document();
-
-                    return (
-                        StatusCode::CONFLICT,
-                        [(header::CACHE_CONTROL, "no-cache")],
-                        Json::from(body),
-                    ).into_response();
-                },
                 Err(err) => {
                     error!("error_id={} Failed to post event: {:?}", error_id, err);
                     let body = ApiError {

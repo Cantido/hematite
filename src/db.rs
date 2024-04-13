@@ -1,6 +1,5 @@
 use anyhow::{ensure, Context, Result};
 use cloudevents::*;
-use serde::Serialize;
 use std::fmt;
 use std::io::{SeekFrom, Write};
 use std::time::SystemTime;
@@ -9,20 +8,12 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufR
 use std::path::Path;
 use std::path::PathBuf;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub enum RunState {
-    Stopped,
-    Running
-}
-
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("revision mismatch")]
     RevisionMismatch,
     #[error("an event with that source and ID value is already present in the stream")]
     SourceIdConflict,
-    #[error("the database is currently not accepting requests")]
-    Stopped,
 }
 
 #[derive(Debug, Default)]
