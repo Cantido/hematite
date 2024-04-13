@@ -65,7 +65,7 @@ impl Database {
         let index_path = self.index_path();
         let mut index_file = File::options()
             .read(true)
-            .append(true)
+            .truncate(true)
             .create(true)
             .open(&index_path).await
             .with_context(|| format!("Failed to open file for index at {:?}", index_path))?;
