@@ -15,8 +15,6 @@ fn read_bench(c: &mut Criterion) {
     let mut db = Database::new(dir.path());
     runtime
         .block_on(async {
-            db.start().await.unwrap();
-
             for _n in 1..100_000 {
                 let event = Event::default();
                 db.append(vec![event], ExpectedRevision::Any).await

@@ -15,7 +15,6 @@ fn write_bench(c: &mut Criterion) {
         b.to_async(&runtime).iter(|| async {
             let dir = tempdir().unwrap();
             let mut db = Database::new(dir.path());
-            db.start().await.unwrap();
             db.append(vec![Event::default()], ExpectedRevision::Any).await.unwrap();
         })
     });

@@ -8,13 +8,12 @@ use anyhow::{Context, Result};
 use cloudevents::Event;
 use dashmap::DashMap;
 use data_encoding::BASE32_NOPAD;
-use tokio::{sync::Mutex, task::JoinSet};
+use tokio::sync::Mutex;
 use tracing::{debug, error, info};
 use serde::Serialize;
 use crate::db::{
     Database,
     ExpectedRevision,
-    RunState,
 };
 
 
@@ -42,7 +41,6 @@ pub struct Stream {
     #[serde(skip)]
     pub id: StreamId,
     pub revision: u64,
-    pub state: RunState,
     pub last_modified: u64,
     pub usage: u64,
 }
@@ -115,22 +113,6 @@ impl AppState {
                     }
                 }
             }
-
-            let mut tasks = JoinSet::new();
-
-            for stream_id in state.streams.iter() {
-                let db = stream_id.value().clone();
-
-                tasks.spawn(async move {
-                    db.lock().await.start().await
-                });
-            }
-
-            while let Some(res) = tasks.join_next().await {
-                if let Err(err) = res.unwrap() {
-                    error!("Failed to start database: {}", err);
-                }
-            }
         }
 
         info!("Done initializing streams");
@@ -169,13 +151,6 @@ impl AppState {
         Ok(init_db)
     }
 
-    async fn start_database(&self, stream_id: &UserStreamId) -> Result<bool> {
-        let db = self.streams.get(stream_id).ok_or(Error::StreamNotFound)?;
-
-        let result = db.lock().await.start().await;
-        result
-    }
-
     #[tracing::instrument]
     pub async fn get_event(&self, user_id: &UserId, stream_id: &StreamId, rownum: u64) -> Result<Option<Event>> {
         let stream_id = user_stream_id(user_id, stream_id);
@@ -202,9 +177,7 @@ impl AppState {
     #[tracing::instrument]
     pub async fn insert_event(&self, user_id: &UserId, stream_id: &StreamId, event: Event, revision: ExpectedRevision) -> Result<u64> {
         let stream_id = user_stream_id(user_id, stream_id);
-        if self.initialize_database(&stream_id)? {
-            self.start_database(&stream_id).await?;
-        }
+        self.initialize_database(&stream_id)?;
 
         let db = self.streams.get(&stream_id).ok_or(Error::StreamNotFound)?;
 
@@ -215,9 +188,7 @@ impl AppState {
     #[tracing::instrument]
     pub async fn insert_event_many(&self, user_id: &UserId, stream_id: &StreamId, events: Vec<Event>, revision: ExpectedRevision) -> Result<u64> {
         let stream_id = user_stream_id(user_id, stream_id);
-        if self.initialize_database(&stream_id)? {
-            self.start_database(&stream_id).await?;
-        }
+        self.initialize_database(&stream_id)?;
 
         let db = self.streams.get(&stream_id).ok_or(Error::StreamNotFound)?;
 
@@ -265,7 +236,6 @@ impl AppState {
 
         let db = db_lock.lock().await;
         let revision = db.revision().await?;
-        let state = db.state();
         let last_modified = db.last_modified().await?;
         let usage = db.file_len().await?;
 
@@ -273,7 +243,6 @@ impl AppState {
             id: stream_id.to_string(),
             usage,
             revision,
-            state,
             last_modified,
         })
     }

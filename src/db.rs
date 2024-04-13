@@ -36,7 +36,6 @@ pub enum ExpectedRevision {
 
 #[derive(Clone)]
 pub struct Database {
-    state: RunState,
     path: PathBuf,
 }
 
@@ -49,7 +48,6 @@ impl fmt::Debug for Database {
 impl Database {
     pub fn new(path: &Path) -> Self {
         Self {
-            state: RunState::Stopped,
             path: path.to_path_buf(),
         }
     }
@@ -85,19 +83,6 @@ impl Database {
         }
 
         Ok(())
-    }
-
-    #[tracing::instrument]
-    pub async fn start(&mut self) -> Result<bool> {
-        match self.state {
-            RunState::Running => {
-                return Ok(false)
-            }
-            RunState::Stopped => {
-                self.state = RunState::Running;
-                return Ok(true);
-            }
-        }
     }
 
     #[tracing::instrument]
@@ -138,7 +123,7 @@ impl Database {
         }
     }
 
-    async fn last_offset(&self) -> Result<u64> {
+    pub async fn last_offset(&self) -> Result<u64> {
         let index_path = self.index_path();
 
         if index_path.try_exists()? {
@@ -156,14 +141,7 @@ impl Database {
     }
 
     #[tracing::instrument]
-    pub fn state(&self) -> RunState {
-        self.state.clone()
-    }
-
-    #[tracing::instrument]
     pub async fn query(&self, start: u64, limit: usize) -> Result<Vec<Event>> {
-        ensure!(self.state == RunState::Running, Error::Stopped);
-
         let index_path = self.index_path();
 
         if !index_path.try_exists()? {
@@ -215,7 +193,6 @@ impl Database {
         events: Vec<Event>,
         expected_revision: ExpectedRevision,
     ) -> Result<u64> {
-        ensure!(self.state == RunState::Running, Error::Stopped);
         ensure!(!events.is_empty(), "Events list cannot be empty");
 
         let current_revision = self.revision().await?;
@@ -227,15 +204,9 @@ impl Database {
             ExpectedRevision::Exact(revision) => current_revision == revision,
         };
 
-        if revision_match {
-            self.write_events(&events, current_revision).await
-        } else {
-            Err(Error::RevisionMismatch.into())
+        if !revision_match {
+            return Err(Error::RevisionMismatch.into());
         }
-    }
-
-    async fn write_events(&mut self, events: &Vec<Event>, starting_revision: u64) -> Result<u64> {
-        ensure!(!events.is_empty(), "Events list cannot be empty");
 
         let events_path = self.events_path();
 
@@ -276,7 +247,7 @@ impl Database {
             event_offset += *event_length as u64 + 1;
         }
 
-        Ok(starting_revision + events.len() as u64)
+        Ok(current_revision + events.len() as u64)
     }
 
     pub async fn delete(&mut self) -> anyhow::Result<()> {
@@ -321,7 +292,6 @@ mod tests {
         let test_file = tempdir().unwrap();
 
         let mut db = Database::new(test_file.path());
-        db.start().await.expect("Could not start DB");
 
         let event = Event::default();
 
@@ -342,8 +312,7 @@ mod tests {
     async fn read_nonexistent() {
         let test_file = tempdir().unwrap();
 
-        let mut db = Database::new(test_file.path());
-        db.start().await.expect("Could not start DB");
+        let db = Database::new(test_file.path());
 
         let result = db.query(0, 1).await.expect("Expected success reading empty db");
 
@@ -355,7 +324,6 @@ mod tests {
         let test_file = tempdir().unwrap();
 
         let mut db = Database::new(test_file.path());
-        db.start().await.expect("Could not start DB");
 
         let event = Event::default();
 
@@ -368,7 +336,6 @@ mod tests {
         let test_file = tempdir().unwrap();
 
         let mut db = Database::new(test_file.path());
-        db.start().await.expect("Could not start DB");
 
         let event1 = Event::default();
         let event2 = Event::default();
@@ -382,7 +349,6 @@ mod tests {
         let test_file = tempdir().unwrap();
 
         let mut db = Database::new(test_file.path());
-        db.start().await.expect("Could not start DB");
 
         let event = Event::default();
 
@@ -394,7 +360,6 @@ mod tests {
         let test_file = tempdir().unwrap();
 
         let mut db = Database::new(test_file.path());
-        db.start().await.expect("Could not start DB");
 
         let event1 = Event::default();
         let event2 = Event::default();
@@ -409,7 +374,6 @@ mod tests {
         let test_file = tempdir().unwrap();
 
         let mut db = Database::new(test_file.path());
-        db.start().await.expect("Could not start DB");
 
         let event = Event::default();
 
