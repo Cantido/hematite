@@ -1,12 +1,11 @@
 use anyhow::{ensure, Context, Result};
 use cloudevents::*;
 use serde::Serialize;
-use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{SeekFrom, Write};
 use std::time::SystemTime;
 use tokio::fs::{File, self};
-use tokio::io::{BufReader, AsyncBufReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -39,7 +38,6 @@ pub enum ExpectedRevision {
 pub struct Database {
     state: RunState,
     path: PathBuf,
-    primary_index: BTreeMap<u64, u64>,
 }
 
 impl fmt::Debug for Database {
@@ -53,13 +51,12 @@ impl Database {
         Self {
             state: RunState::Stopped,
             path: path.to_path_buf(),
-            primary_index: BTreeMap::new(),
         }
     }
 
-    async fn load(&mut self) -> Result<()> {
+    #[tracing::instrument]
+    pub async fn rebuild_index(&mut self) -> Result<()> {
         let events_path = self.events_path();
-
         let file = File::options()
             .read(true)
             .append(true)
@@ -67,18 +64,24 @@ impl Database {
             .open(&events_path).await
             .with_context(|| format!("Could not open file to create DB at {:?}", events_path))?;
 
-        let mut offset = 0u64;
-        let mut rowid = 0u64;
+        let index_path = self.index_path();
+        let mut index_file = File::options()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(&index_path).await
+            .with_context(|| format!("Failed to open file for index at {:?}", index_path))?;
 
+        let mut offset = 0u64;
         let mut lines = BufReader::new(file).lines();
 
-        while let Some(line) = lines.next_line().await? {
-            let rowlen: u64 = line.len() as u64;
-            self.primary_index.insert(rowid as u64, offset);
+        index_file.write_u64(offset).await?;
 
+        while let Some(line) = lines.next_line().await? {
             // offset addend is `rowlen + 1` because `BufReader::lines()` strips newlines for us
-            offset += rowlen + 1;
-            rowid += 1;
+            offset += line.len() as u64 + 1;
+
+            index_file.write_u64(offset).await?;
         }
 
         Ok(())
@@ -91,7 +94,6 @@ impl Database {
                 return Ok(false)
             }
             RunState::Stopped => {
-                self.load().await?;
                 self.state = RunState::Running;
                 return Ok(true);
             }
@@ -124,8 +126,33 @@ impl Database {
     }
 
     #[tracing::instrument]
-    pub fn revision(&self) -> u64 {
-        self.primary_index.last_key_value().map_or(0, |(&k, _v)| k)
+    pub async fn revision(&self) -> Result<u64> {
+        let index_path = self.index_path();
+
+        if index_path.try_exists()? {
+            fs::metadata(&index_path).await
+                .with_context(|| format!("Failed to metadata of index at {:?}", index_path))
+                .map(|m| m.len() / 8)
+        } else {
+            Ok(0)
+        }
+    }
+
+    async fn last_offset(&self) -> Result<u64> {
+        let index_path = self.index_path();
+
+        if index_path.try_exists()? {
+        let mut index_file = File::options()
+            .read(true)
+            .open(&index_path).await
+            .with_context(|| format!("Failed to open file for index at {:?}", index_path))?;
+
+        index_file.seek(SeekFrom::End(8)).await?;
+        index_file.read_u64().await
+            .with_context(|| format!("Failed to read u64 from index at {:?}", index_path))
+        } else {
+            Ok(0)
+        }
     }
 
     #[tracing::instrument]
@@ -137,6 +164,22 @@ impl Database {
     pub async fn query(&self, start: u64, limit: usize) -> Result<Vec<Event>> {
         ensure!(self.state == RunState::Running, Error::Stopped);
 
+        let index_path = self.index_path();
+
+        if !index_path.try_exists()? {
+            return Ok(vec![]);
+        }
+
+        let mut index_file = File::options()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(&index_path).await
+            .with_context(|| format!("Could not open index file at {:?}", index_path))?;
+
+        index_file.seek(SeekFrom::Start(start * 8)).await?;
+
+        let start_offset = index_file.read_u64().await?;
         let events_path = self.events_path();
 
         let mut file = File::options()
@@ -146,13 +189,9 @@ impl Database {
             .open(&events_path).await
             .with_context(|| format!("Could not open file to query DB at {:?}", events_path))?;
 
-        let row_offset = match self.primary_index.get(&start) {
-            Some(row_offset) => row_offset,
-            None => return Ok(vec![]),
-        };
         let _position = file
-            .seek(SeekFrom::Start(*row_offset)).await
-            .with_context(|| format!("Failed to seek to row {} (offset {}) from DB at {:?}", start, row_offset, events_path))?;
+            .seek(SeekFrom::Start(start_offset)).await
+            .with_context(|| format!("Failed to seek to row {} (offset {}) from DB at {:?}", start, start_offset, events_path))?;
 
         let mut events = vec![];
 
@@ -179,25 +218,23 @@ impl Database {
         ensure!(self.state == RunState::Running, Error::Stopped);
         ensure!(!events.is_empty(), "Events list cannot be empty");
 
+        let current_revision = self.revision().await?;
+
         let revision_match: bool = match expected_revision {
             ExpectedRevision::Any => true,
-            ExpectedRevision::NoStream => self.primary_index.last_key_value().is_none(),
-            ExpectedRevision::StreamExists => self.primary_index.last_key_value().is_some(),
-            ExpectedRevision::Exact(revision) => self
-                .primary_index
-                .last_key_value()
-                .map(|t| t.0)
-                .map_or(false, |r| r == &revision),
+            ExpectedRevision::NoStream => current_revision == 0,
+            ExpectedRevision::StreamExists => current_revision > 0,
+            ExpectedRevision::Exact(revision) => current_revision == revision,
         };
 
         if revision_match {
-            self.write_events(&events).await
+            self.write_events(&events, current_revision).await
         } else {
             Err(Error::RevisionMismatch.into())
         }
     }
 
-    async fn write_events(&mut self, events: &Vec<Event>) -> Result<u64> {
+    async fn write_events(&mut self, events: &Vec<Event>, starting_revision: u64) -> Result<u64> {
         ensure!(!events.is_empty(), "Events list cannot be empty");
 
         let events_path = self.events_path();
@@ -219,42 +256,46 @@ impl Database {
             .open(&events_path).await
             .with_context(|| format!("Failed to open file for DB at {:?}", events_path))?;
 
-        let position = file.seek(SeekFrom::End(0)).await
+        let mut event_offset = file.seek(SeekFrom::End(0)).await
             .with_context(|| format!("Failed to seek to end of file for DB at {:?}", events_path))?;
 
         file.write_all(&bytes).await
             .with_context(|| format!("Failed to write event to file for DB at {:?}", events_path))?;
 
-        let mut last_revision = 0;
-        let mut prev_offset = position;
+        let index_path = self.index_path();
+        let mut index_file = File::options()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(&index_path).await
+            .with_context(|| format!("Failed to open file for index at {:?}", index_path))?;
 
         for event_length in event_lengths.iter() {
-            let (next_event_rownum, next_event_offset) = match self.primary_index.last_key_value() {
-                None => (0, 0),
-                Some((last_rownum, _offset)) => (last_rownum + 1, prev_offset),
-            };
+            index_file.write_u64(event_offset).await?;
 
-            prev_offset += *event_length as u64;
-            last_revision = next_event_rownum;
-
-            self.primary_index.insert(next_event_rownum, next_event_offset);
+            event_offset += *event_length as u64 + 1;
         }
 
-        Ok(last_revision)
+        Ok(starting_revision + events.len() as u64)
     }
 
     pub async fn delete(&mut self) -> anyhow::Result<()> {
         let events_path = self.events_path();
-
         fs::remove_file(&events_path).await
-            .with_context(|| format!("Failed to delete datbase file at {:?}", events_path))?;
-        self.primary_index.clear();
+            .with_context(|| format!("Failed to delete database file at {:?}", events_path))?;
+
+        let index_path = self.index_path();
+        fs::remove_file(&index_path).await
+            .with_context(|| format!("Failed to delete index file at {:?}", events_path))?;
 
         Ok(())
     }
 
     fn events_path(&self) -> PathBuf {
         self.path.join("events.ndjson")
+    }
+    fn index_path(&self) -> PathBuf {
+        self.path.join("index.dat")
     }
 }
 
@@ -293,7 +334,7 @@ mod tests {
             .pop()
             .expect("Failed to read row");
 
-        assert_eq!(rownum, 0);
+        assert_eq!(rownum, 1);
         assert_eq!(result.id(), event.id());
     }
 
@@ -349,18 +390,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cannot_write_expecting_revision_zero_with_empty_db() {
-        let test_file = tempdir().unwrap();
-
-        let mut db = Database::new(test_file.path());
-        db.start().await.expect("Could not start DB");
-
-        let event = Event::default();
-
-        assert!(db.append(vec![event], ExpectedRevision::Exact(0)).await.is_err());
-    }
-
-    #[tokio::test]
     async fn can_write_expecting_revision_zero_with_present_row() {
         let test_file = tempdir().unwrap();
 
@@ -371,7 +400,7 @@ mod tests {
         let event2 = Event::default();
         db.append(vec![event1], ExpectedRevision::NoStream).await
             .expect("Could not write to the DB");
-        db.append(vec![event2], ExpectedRevision::Exact(0)).await
+        db.append(vec![event2], ExpectedRevision::Exact(1)).await
             .expect("Could not write to the DB");
     }
 
@@ -384,7 +413,7 @@ mod tests {
 
         let event = Event::default();
 
-        for n in 0..100 {
+        for n in 1..100 {
             let rownum =
                 db.append(vec![Event::default()], ExpectedRevision::Any).await
                 .expect("Could not write to the DB");
@@ -395,16 +424,16 @@ mod tests {
         db.append(vec![event.clone()], ExpectedRevision::Any).await
             .expect("Could not write to the DB");
 
-        for n in 0..100 {
+        for n in 1..100 {
             let rownum =
                 db.append(vec![Event::default()], ExpectedRevision::Any).await
                 .expect("Could not write to the DB");
 
-            assert_eq!(rownum, n + 101);
+            assert_eq!(rownum, n + 100);
         }
 
         let result: Event = db
-            .query(100, 1).await
+            .query(99, 1).await
             .expect("Row not found")
             .pop()
             .expect("Failed to read row");

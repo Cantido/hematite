@@ -264,7 +264,7 @@ impl AppState {
         let db_lock = self.streams.get(&user_stream_id).ok_or(Error::StreamNotFound)?;
 
         let db = db_lock.lock().await;
-        let revision = db.revision();
+        let revision = db.revision().await?;
         let state = db.state();
         let last_modified = db.last_modified().await?;
         let usage = db.file_len().await?;
