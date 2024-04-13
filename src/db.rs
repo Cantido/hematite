@@ -48,8 +48,6 @@ impl Database {
         let events_path = self.events_path();
         let file = File::options()
             .read(true)
-            .append(true)
-            .create(true)
             .open(&events_path).await
             .with_context(|| format!("Could not open file to create DB at {:?}", events_path))?;
 
