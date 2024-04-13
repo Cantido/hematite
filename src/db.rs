@@ -44,7 +44,7 @@ impl Database {
     }
 
     #[tracing::instrument]
-    pub async fn rebuild_index(&mut self) -> Result<()> {
+    pub async fn rebuild_index(&self) -> Result<()> {
         let events_path = self.events_path();
         let file = File::options()
             .read(true)
@@ -178,7 +178,7 @@ impl Database {
 
     #[tracing::instrument]
     pub async fn append(
-        &mut self,
+        &self,
         events: Vec<Event>,
         expected_revision: ExpectedRevision,
     ) -> Result<u64> {
@@ -280,7 +280,7 @@ mod tests {
     async fn can_write_and_read() {
         let test_file = tempdir().unwrap();
 
-        let mut db = Database::new(test_file.path());
+        let db = Database::new(test_file.path());
 
         let event = Event::default();
 
@@ -312,7 +312,7 @@ mod tests {
     async fn can_write_expecting_no_stream_in_empty_db() {
         let test_file = tempdir().unwrap();
 
-        let mut db = Database::new(test_file.path());
+        let db = Database::new(test_file.path());
 
         let event = Event::default();
 
@@ -324,7 +324,7 @@ mod tests {
     async fn cannot_write_expecting_no_stream_in_non_empty_db() {
         let test_file = tempdir().unwrap();
 
-        let mut db = Database::new(test_file.path());
+        let db = Database::new(test_file.path());
 
         let event1 = Event::default();
         let event2 = Event::default();
@@ -337,7 +337,7 @@ mod tests {
     async fn cannot_write_to_empty_db_expecting_stream_exists() {
         let test_file = tempdir().unwrap();
 
-        let mut db = Database::new(test_file.path());
+        let db = Database::new(test_file.path());
 
         let event = Event::default();
 
@@ -348,7 +348,7 @@ mod tests {
     async fn can_write_expecting_revision_zero_with_present_row() {
         let test_file = tempdir().unwrap();
 
-        let mut db = Database::new(test_file.path());
+        let db = Database::new(test_file.path());
 
         let event1 = Event::default();
         let event2 = Event::default();
@@ -362,7 +362,7 @@ mod tests {
     async fn can_write_and_read_many() {
         let test_file = tempdir().unwrap();
 
-        let mut db = Database::new(test_file.path());
+        let db = Database::new(test_file.path());
 
         let event = Event::default();
 

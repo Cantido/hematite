@@ -12,7 +12,7 @@ fn read_bench(c: &mut Criterion) {
         .unwrap();
 
     let dir = tempdir().unwrap();
-    let mut db = Database::new(dir.path());
+    let db = Database::new(dir.path());
     runtime
         .block_on(async {
             for _n in 1..100_000 {
