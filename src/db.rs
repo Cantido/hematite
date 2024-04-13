@@ -35,6 +35,7 @@ pub enum ExpectedRevision {
     Exact(u64),
 }
 
+#[derive(Clone)]
 pub struct Database {
     state: RunState,
     path: PathBuf,
@@ -133,7 +134,7 @@ impl Database {
     }
 
     #[tracing::instrument]
-    pub async fn query(&mut self, start: u64, limit: usize) -> Result<Vec<Event>> {
+    pub async fn query(&self, start: u64, limit: usize) -> Result<Vec<Event>> {
         ensure!(self.state == RunState::Running, Error::Stopped);
 
         let events_path = self.events_path();

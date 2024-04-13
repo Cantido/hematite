@@ -1,20 +1,24 @@
 use cloudevents::event::Event;
 use criterion::{criterion_group, criterion_main, Criterion};
-use std::path::PathBuf;
+use tempfile::tempdir;
 
 use hematite::db::{Database, ExpectedRevision};
 
 fn write_bench(c: &mut Criterion) {
-    let _ = std::fs::remove_file("stream.db");
-
-    let mut db = Database::new(&PathBuf::from("stream.db"));
-    db.start().unwrap();
+    let runtime =
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
 
     c.bench_function("write event", |b| {
-        b.iter(|| db.insert(Event::default(), ExpectedRevision::Any))
+        b.to_async(&runtime).iter(|| async {
+            let dir = tempdir().unwrap();
+            let mut db = Database::new(dir.path());
+            db.start().await.unwrap();
+            db.append(vec![Event::default()], ExpectedRevision::Any).await.unwrap();
+        })
     });
-
-    let _ = std::fs::remove_file("stream.db");
 }
 
 criterion_group!(benches, write_bench);

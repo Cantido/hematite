@@ -11,6 +11,7 @@ anyhow = "1.0.81"
 axum = { version = "0.7.5", features = ["http1", "http2", "tokio"] }
 axum-macros = "0.4.1"
 cloudevents-sdk = "0.7.0"
+criterion = { version = "0.5", features = ["async_tokio"] }
 dashmap = "5.5.3"
 data-encoding = "2.4.0"
 jsonwebtoken = { version = "9.3.0", features = ["use_pem"] }

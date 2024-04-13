@@ -1,38 +1,41 @@
 use cloudevents::event::Event;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
-use rand::prelude::*;
-use std::path::PathBuf;
+use tempfile::tempdir;
 
 use hematite::db::{Database, ExpectedRevision};
 
-fn write_bench(c: &mut Criterion) {
-    let _ = std::fs::remove_file("stream.db");
+fn read_bench(c: &mut Criterion) {
+    let runtime =
+        tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
 
-    let mut db = Database::new(&PathBuf::from("stream.db"));
-    db.start().unwrap();
+    let dir = tempdir().unwrap();
+    let mut db = Database::new(dir.path());
+    runtime
+        .block_on(async {
+            db.start().await.unwrap();
 
-    for _n in 1..100_000 {
-        let event = Event::default();
-        db.insert(event, ExpectedRevision::Any)
-            .expect("Could not insert value into DB");
-    }
-
-    let mut rng = thread_rng();
+            for _n in 1..100_000 {
+                let event = Event::default();
+                db.append(vec![event], ExpectedRevision::Any).await
+                    .expect("Could not insert value into DB");
+            }
+        });
 
     c.bench_function("read event", |b| {
-        b.iter_batched(
-            || rng.gen_range(0..99_999),
-            |rownum| {
-                db.query(rownum)
-                    .expect("Row not found")
-                    .expect("Failed to read DB")
+        b
+        .to_async(&runtime)
+        .iter_batched(
+            || db.clone(),
+            |db| async move {
+                db.query(50_000, 1).await.expect("Failed to read DB");
             },
             BatchSize::SmallInput,
         )
     });
-
-    let _ = std::fs::remove_file("stream.db");
 }
 
-criterion_group!(benches, write_bench);
+criterion_group!(benches, read_bench);
 criterion_main!(benches);
