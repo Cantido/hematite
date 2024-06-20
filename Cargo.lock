@@ -807,7 +807,7 @@ dependencies = [
  "log",
  "opentelemetry-otlp",
  "opentelemetry_api",
- "opentelemetry_sdk 0.22.1",
+ "opentelemetry_sdk 0.23.0",
  "rand",
  "reqwest",
  "serde",
@@ -1477,8 +1477,6 @@ dependencies = [
  "percent-encoding",
  "rand",
  "thiserror",
- "tokio",
- "tokio-stream",
 ]
 
 [[package]]
@@ -1500,6 +1498,8 @@ dependencies = [
  "rand",
  "serde_json",
  "thiserror",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]
