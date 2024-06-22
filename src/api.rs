@@ -20,6 +20,7 @@ use anyhow::{bail, Result};
 use axum_macros::debug_handler;
 use cloudevents::Event;
 use jsonwebtoken::errors::ErrorKind;
+use tower_http::services::ServeFile;
 use tracing::{error, debug};
 use serde::{Deserialize, Serialize};
 use time::{OffsetDateTime, format_description::well_known::Rfc2822};
@@ -134,7 +135,10 @@ pub async fn stream_routes(streams_dir: PathBuf, oidc_url: Url) -> Result<Router
 
     oidc_client.refresh().await?;
 
+    let openapi = ServeFile::new("../openapi.yaml");
+
     let router = Router::new()
+        .route_service("/openapi.yaml", openapi)
         .route("/streams", get(get_streams))
         .route("/streams/:stream/events/:rownum", get(get_event))
         .route("/streams/:stream/events", post(post_event).get(get_event_index))
