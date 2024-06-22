@@ -6,8 +6,8 @@ info:
   contact:
     email: cosmic.lady.rosa@gmail.com
   license:
-    name: Apache 2.0
-    url: http://www.apache.org/licenses/LICENSE-2.0.html
+    name: GNU Affero General Public License v3.0 or later
+    url: https://www.gnu.org/licenses/agpl-3.0.en.html
 servers:
   - url: https://localhost:8080
 tags:
