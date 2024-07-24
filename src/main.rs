@@ -9,31 +9,12 @@ use std::{env, fs, path::PathBuf};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let telemetry = {
-        let otlp_exporter = opentelemetry_otlp::new_exporter().tonic();
-
-        let tracer = opentelemetry_otlp::new_pipeline()
-            .tracing()
-            .with_exporter(otlp_exporter)
-            .install_simple()?;
-
-        tracing_opentelemetry::layer().with_tracer(tracer)
-    };
-
     let filter_layer = EnvFilter::from_default_env();
 
-    if env::var("OTEL_SDL_DISABLED").unwrap_or("false".to_string()) == "false" {
-        let subscriber = Registry::default()
-            .with(filter_layer)
-            .with(telemetry)
-            .with(fmt::layer());
-        tracing::subscriber::set_global_default(subscriber)?;
-    } else {
-        let subscriber = Registry::default()
-            .with(filter_layer)
-            .with(fmt::layer());
-        tracing::subscriber::set_global_default(subscriber)?;
-    }
+    let subscriber = Registry::default()
+        .with(filter_layer)
+        .with(fmt::layer());
+    tracing::subscriber::set_global_default(subscriber)?;
 
     let streams_dir = env::var("HEMATITE_STREAMS_DIR").expect("Env var HEMATITE_STREAMS_DIR is required");
     let streams_dir = PathBuf::from(streams_dir);
