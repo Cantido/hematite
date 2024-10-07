@@ -28,7 +28,7 @@ shadow-rs = "0.35.0"
 thiserror = "1.0.64"
 time = "0.3.36"
 tokio = { version = "1.40.0", features = ["macros", "rt-multi-thread", "fs"] }
-tower-http = { version = "0.6.0", features = ["fs"] }
+tower-http = { version = "0.6.1", features = ["fs"] }
 tracing = "0.1.40"
 tracing-opentelemetry = "0.26.0"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
