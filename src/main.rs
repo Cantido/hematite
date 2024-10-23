@@ -6,7 +6,6 @@ use tracing_subscriber::{prelude::*, filter::EnvFilter, fmt, Registry};
 use url::Url;
 use std::{env, fs, path::PathBuf};
 
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let filter_layer = EnvFilter::from_default_env();

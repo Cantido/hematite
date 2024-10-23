@@ -5,13 +5,11 @@ edition = "2021"
 build = "build.rs"
 license = "AGPL-3.0-or-later"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 anyhow = "1.0.86"
 axum = { version = "0.7.5", features = ["http1", "http2", "tokio"] }
 axum-macros = "0.4.1"
-cloudevents-sdk = "0.7.0"
+cloudevents-sdk = { version = "0.7.0", features = ["axum"] }
 criterion = { version = "0.5", features = ["async_tokio"] }
 dashmap = "5.5.3"
 data-encoding = "2.6.0"
@@ -20,6 +18,8 @@ log = "0.4.21"
 opentelemetry-otlp = { version = "0.16.0", features = ["logs", "metrics"] }
 opentelemetry_api = { version = "0.20.0", features = ["metrics"] }
 opentelemetry_sdk = { version = "0.23.0", features = ["rt-tokio"] }
+prost = "0.13"
+prost-types = "0.13.1"
 rand = "0.8.5"
 reqwest = { version = "0.12.4", features = ["json"] }
 serde = "1.0.203"
@@ -28,6 +28,7 @@ shadow-rs = "0.27.1"
 thiserror = "1.0.61"
 time = "0.3.36"
 tokio = { version = "1.37.0", features = ["macros", "rt-multi-thread", "fs"] }
+tonic = "0.12.1"
 tower-http = { version = "0.5.2", features = ["fs"] }
 tracing = "0.1.40"
 tracing-opentelemetry = "0.23.0"
@@ -41,6 +42,7 @@ tempfile = "3.10.1"
 
 [build-dependencies]
 shadow-rs = "0.27.1"
+tonic-build = "0.12"
 
 [[bench]]
 name = "write_benchmark"

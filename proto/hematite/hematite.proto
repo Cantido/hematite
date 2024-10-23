@@ -1,0 +1,27 @@
+syntax = "proto3";
+package hematite;
+
+import "io/cloudevents/v1/cloudevents.proto";
+
+service EventStore {
+    rpc AppendEvent (AppendEventRequest) returns (AppendEventReply);
+}
+
+enum ExpectedRevision {
+    ANY = 0;
+    NO_STREAM = 1;
+    STREAM_EXISTS = 2;
+}
+
+message AppendEventRequest {
+    oneof expected_revision {
+        ExpectedRevision stream_state = 1;
+        uint64 exact_revision = 2;
+    }
+    io.cloudevents.v1.CloudEvent event = 3;
+}
+
+message AppendEventReply {
+    uint64 revision = 1;
+}
+
