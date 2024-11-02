@@ -24,7 +24,7 @@ rand = "0.8.5"
 reqwest = { version = "0.12.8", features = ["json"] }
 serde = "1.0.213"
 serde_json = "1.0.132"
-shadow-rs = "0.35.1"
+shadow-rs = "0.35.2"
 thiserror = "1.0.64"
 time = "0.3.36"
 tokio = { version = "1.41.0", features = ["macros", "rt-multi-thread", "fs"] }
@@ -40,7 +40,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3.13.0"
 
 [build-dependencies]
-shadow-rs = "0.35.1"
+shadow-rs = "0.35.2"
 
 [[bench]]
 name = "write_benchmark"
