@@ -23,7 +23,7 @@ opentelemetry_sdk = { version = "0.27.0", features = ["rt-tokio"] }
 rand = "0.8.5"
 reqwest = { version = "0.12.9", features = ["json"] }
 serde = "1.0.217"
-serde_json = "1.0.134"
+serde_json = "1.0.135"
 shadow-rs = "0.37.0"
 thiserror = "2.0.9"
 time = "0.3.37"
