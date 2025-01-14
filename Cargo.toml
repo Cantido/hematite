@@ -11,7 +11,7 @@ license = "AGPL-3.0-or-later"
 anyhow = "1.0.95"
 axum = { version = "0.8.1", features = ["http1", "http2", "tokio"] }
 axum-macros = "0.5.0"
-cloudevents-sdk = "0.7.0"
+cloudevents-sdk = "0.8.0"
 criterion = { version = "0.5", features = ["async_tokio"] }
 dashmap = "6.1.0"
 data-encoding = "2.6.0"
