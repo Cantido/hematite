@@ -37,7 +37,7 @@ uuid = { version = "1.12.1", features = ["serde", "v7"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
-tempfile = "3.15.0"
+tempfile = "3.16.0"
 
 [build-dependencies]
 shadow-rs = "0.38.0"
