@@ -16,7 +16,7 @@ criterion = { version = "0.5", features = ["async_tokio"] }
 dashmap = "6.1.0"
 data-encoding = "2.8.0"
 jsonwebtoken = { version = "9.3.1", features = ["use_pem"] }
-log = "0.4.25"
+log = "0.4.26"
 opentelemetry-otlp = { version = "0.28.0", features = ["logs", "metrics"] }
 opentelemetry_api = { version = "0.20.0", features = ["metrics"] }
 opentelemetry_sdk = { version = "0.28.0", features = ["rt-tokio"] }
