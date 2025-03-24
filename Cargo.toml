@@ -19,7 +19,7 @@ jsonwebtoken = { version = "9.3.1", features = ["use_pem"] }
 log = "0.4.26"
 opentelemetry-otlp = { version = "0.28.0", features = ["logs", "metrics"] }
 opentelemetry_api = { version = "0.20.0", features = ["metrics"] }
-opentelemetry_sdk = { version = "0.28.0", features = ["rt-tokio"] }
+opentelemetry_sdk = { version = "0.29.0", features = ["rt-tokio"] }
 rand = "0.9.0"
 reqwest = { version = "0.12.14", features = ["json"] }
 serde = "1.0.219"
